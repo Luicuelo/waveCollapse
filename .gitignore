@@ -1,0 +1,8 @@
+.gitattributes
+bin/circuit/bridge.png
+/out
+*.7z
+waveCollapse.iml
+/bin
+/.idea
+javadoc.txt
