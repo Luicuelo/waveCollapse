@@ -5,12 +5,14 @@ import javafx.scene.image.PixelReader;
 import javafx.scene.image.PixelWriter;
 import javafx.scene.image.WritableImage;
 import javafx.scene.paint.Color;
+import principal.TitlesManager.TitleSet.SetType;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Manages circuit tile definitions and operations for the Wave Function
@@ -33,29 +35,59 @@ import java.util.Set;
  */
 public class TitlesManager {
 
-    protected enum TitleSet {
+    public enum TitleSet {
 
-        CIRCUIT("circuit", 14,SetType.FROMTITLES),
-        CASTLE("castle", 7,SetType.FROMTITLES),
-        KNOTS("knots", 10,SetType.FROMTITLES),
-        SIMPLE("simple", 3,SetType.FROMTITLES),
-        FLOORPLAN("floorPlan", 9,SetType.FROMTITLES),
-        ROOMS("rooms", 3,SetType.FROMTITLES),
-        CIRCLES("circles", 32,SetType.FROMTITLES);
+        CIRCUIT("circuit", 14, SetType.FROMTITLES),
+        CASTLE("castle", 7, SetType.FROMTITLES),
+        KNOTS("knots", 10, SetType.FROMTITLES),
+        SIMPLE("simple", 3, SetType.FROMTITLES),
+        FLOORPLAN("floorPlan", 9, SetType.FROMTITLES),
+        ROOMS("rooms", 3, SetType.FROMTITLES),
+        CIRCLES("circles", 32, SetType.FROMTITLES),
+        NOTKNOT("NotKnot", 3, SetType.FROMSAMPLE),
+        LINK("Link", 3, SetType.FROMSAMPLE),
+        KNOT("Knot", 3, SetType.FROMSAMPLE),
+        MAZE("Maze", 3, SetType.FROMSAMPLE),
+        COLCITY("ColoredCity", 3, SetType.FROMSAMPLE),        
+        CITY("City", 3, SetType.FROMSAMPLE),        
+        WATER("Water", 3, SetType.FROMSAMPLE),
+        SKYLINE("Skyline",3,SetType.FROMSAMPLENOTDERIVED);
+
 
         protected static enum SetType {
             FROMTITLES,
-            FROMSAMPLE
+            FROMSAMPLE,
+            FROMSAMPLENOTDERIVED
+        }
+
+        protected static class StringFromColors {
+            Map<Integer, String> map = new HashMap<>();
+            char lastLetter = 'A';
+
+            protected String getLetter(int color) {
+                if (map.containsKey(color)) {
+                    return map.get(color);
+                } else {
+                    String letter = String.valueOf(lastLetter++);
+                    map.put(color, letter);
+                    return letter;
+                }
+            }
         }
 
         private final String titleSetName;
         private final int titleSetSize;
         private final SetType setType;
+        private final StringFromColors stringFromColors = new StringFromColors();
 
         TitleSet(String name, int size, SetType setType) {
             this.titleSetName = name;
             this.titleSetSize = size;
-            this.setType=setType;
+            this.setType = setType;
+        }
+
+        public String getStringFromColor(int color) {
+            return this.stringFromColors.getLetter(color);
         }
 
         public String getName() {
@@ -66,12 +98,85 @@ public class TitlesManager {
             return titleSetSize;
         }
 
-        public SetType getSetType(){
+        public SetType getSetType() {
             return this.setType;
         }
     }
 
     private static final List<Title> Titles = new ArrayList<>();
+
+    private static WritableImage copy3x3Region(PixelReader source, int startX, int startY) {
+        WritableImage destImage = new WritableImage(3, 3);
+        PixelWriter writer = destImage.getPixelWriter();
+        for (int dy = 0; dy < 3; dy++) {
+            for (int dx = 0; dx < 3; dx++) {
+                int argb = source.getArgb(startX + dx, startY + dy);
+                writer.setArgb(dx, dy, argb);
+            }
+        }
+        return destImage;
+    }
+
+    private static String getDescriptionFromImage(TitleSet set, PixelReader source) {
+
+        StringBuilder cad = new StringBuilder();
+        // Read in the correct order for tile description (clockwise from top-left)
+        // Top side: left, center, right
+        cad.append(set.getStringFromColor(source.getArgb(0, 0))); // top-left
+        cad.append(set.getStringFromColor(source.getArgb(1, 0))); // top-center
+        cad.append(set.getStringFromColor(source.getArgb(2, 0))); // top-right
+        // Right side: center, bottom (top-right already included)
+        cad.append(set.getStringFromColor(source.getArgb(2, 1))); // right-center
+        cad.append(set.getStringFromColor(source.getArgb(2, 2))); // right-bottom
+        // Bottom side: center, left (right-bottom already included)
+        cad.append(set.getStringFromColor(source.getArgb(1, 2))); // bottom-center
+        cad.append(set.getStringFromColor(source.getArgb(0, 2))); // bottom-left
+        // Left side: center (top-left and bottom-left already included)
+        cad.append(set.getStringFromColor(source.getArgb(0, 1))); // left-center
+
+        return cad.toString();
+    }
+
+    public static void loadTitlesFromSample(TitleSet set) {
+        // Load base image
+        Image baseImage = null;
+        try {
+            String imagePath = "/sample/" + set.getName() + ".png";
+            java.net.URL resource = TitlesManager.class.getResource(imagePath);
+            if (resource != null) {
+                baseImage = new Image(resource.toExternalForm());
+            } else {
+                System.err.println("Warning: Could not find image resource: " + imagePath);
+            }
+        } catch (Exception e) {
+            System.err.println("Warning: Failed to load image for sample: " + set.getName());
+            e.printStackTrace();
+        }
+        // We are going to createte titles from sample , geting 3x3 portions.
+
+        if (baseImage == null)
+            return;
+
+        int sampleWidth = (int) baseImage.getWidth();
+        int sampleHeight = (int) baseImage.getHeight();
+
+        PixelReader baseReader = baseImage.getPixelReader();
+
+        for (int y = 0; y <= sampleHeight - 3; y++) {
+            for (int x = 0; x <= sampleWidth - 3; x++) {
+                WritableImage subImage = copy3x3Region(baseReader, x, y);
+                String description = getDescriptionFromImage(set, subImage.getPixelReader());
+                if(!isDescriptionExists(description)) {
+                    //System.out.println(set.getName() + "_" + x + "_" + y+" with Description "+description);
+                    Title newTitle = new Title(set, set.getName() + "_" + x + "_" + y, description, subImage);
+                    if (set.getSetType() == TitleSet.SetType.FROMSAMPLENOTDERIVED && (y == (sampleHeight - 3)) ) {
+                         newTitle.isBoottonTile = true;
+                    }
+                    Titles.add(newTitle);
+                }
+            }
+        }
+    }
 
     /**
      * Loads the base tiles and generates their derived versions.
@@ -91,97 +196,102 @@ public class TitlesManager {
      */
     public static void loadTitles(TitleSet set) {
         Titles.clear();
-        switch (set) {
-            case CIRCUIT:
-                Titles.add(new Title(set, "bridge", "GBGWGBGW"));
-                Titles.add(new Title(set, "component", "DDDDDDDD"));
-                Titles.add(new Title(set, "connection", "GBGGDDDG"));
-                Titles.add(new Title(set, "corner", "GGGGGGDG"));
-                Titles.add(new Title(set, "dskew", "GBGBGBGB", true, false));
-                Titles.add(new Title(set, "ecomponent", "GGGGDDDG"));
-                Titles.add(new Title(set, "skew", "GBGBGGGG"));
-                Titles.add(new Title(set, "substrate", "GGGGGGGG"));
-                Titles.add(new Title(set, "t", "GGGBGBGB"));
-                Titles.add(new Title(set, "track", "GBGGGBGG"));
-                Titles.add(new Title(set, "transition", "GWGGGBGG"));
-                Titles.add(new Title(set, "turn", "GBGBGGGG"));
-                Titles.add(new Title(set, "viad", "GGGBGGGB"));
-                Titles.add(new Title(set, "vias", "GBGGGGGG"));
-                Titles.add(new Title(set, "wire", "GGGWGGGW"));
-                break;
-            case CASTLE:
-                Titles.add(new Title(set, "bridge", "GBGYGBGY"));
-                Titles.add(new Title(set, "ground", "GGGGGGGG"));
-                Titles.add(new Title(set, "river", "GBGGGBGG"));
-                Titles.add(new Title(set, "riverturn", "GBGBGGGG"));
-                Titles.add(new Title(set, "road", "GYGGGYGG"));
-                Titles.add(new Title(set, "roadturn", "GYGYGGGG"));
-                Titles.add(new Title(set, "t", "GGGYGYGY"));
-                Titles.add(new Title(set, "tower", "GWGWGGGG", true));
-                Titles.add(new Title(set, "wall", "GWGGGWGG"));
-                Titles.add(new Title(set, "wallriver", "GWGBGWGB"));
-                Titles.add(new Title(set, "wallroad", "GWGYGWGY"));
-                break;
-            case KNOTS:
-                Titles.add(new Title(set, "corner", "WCWCWWWW"));
-                Titles.add(new Title(set, "cross", "WCWCWCWC"));
-                Titles.add(new Title(set, "empty", "WWWWWWWW"));
-                Titles.add(new Title(set, "line", "WWWCWWWC"));
-                Titles.add(new Title(set, "t", "WWWCWCWC"));
-                break;
-            case SIMPLE:
-                Titles.add(new Title(set, "corner", "WCWCWWWW"));
-                Titles.add(new Title(set, "cross", "WCWCWCWC"));
-                Titles.add(new Title(set, "blank", "WWWWWWWW"));
-                Titles.add(new Title(set, "line", "WWWCWWWC"));
-                Titles.add(new Title(set, "t", "WWWCWCWC"));
-                break;
-            case FLOORPLAN:
-                Titles.add(new Title(set, "div", "GGGLGGGL"));
-                Titles.add(new Title(set, "divt", "GGGLGLGL"));
-                Titles.add(new Title(set, "divturn", "GLGLGGGG"));
-                Titles.add(new Title(set, "door", "GGGLGGGL"));
-                Titles.add(new Title(set, "empty", "WWWWWWWW"));
-                Titles.add(new Title(set, "floor", "GGGGGGGG"));
-                Titles.add(new Title(set, "glass", "GGGMWWWM"));
-                Titles.add(new Title(set, "halfglass", "GGGMWWWD"));
-                Titles.add(new Title(set, "in", "GGGGGDWD"));
-                Titles.add(new Title(set, "out", "WDGDWWWW"));
-                Titles.add(new Title(set, "stairs", "GGGLGSGL"));
-                Titles.add(new Title(set, "table", "GGGGGGGG", true));
-                Titles.add(new Title(set, "vent", "WWWWWWWW", true));
-                Titles.add(new Title(set, "w", "GGGDWWWD", true));
-                Titles.add(new Title(set, "wall", "GGGDWWWD"));
-                Titles.add(new Title(set, "walldiv", "GLGDWWWD"));
-                Titles.add(new Title(set, "window", "GGGDWWWD", true));
-                break;
-            case ROOMS:
-                Titles.add(new Title(set, "bend", "WBBBWWWW"));
-                Titles.add(new Title(set, "corner", "BBWBBBBB"));
-                Titles.add(new Title(set, "corridor", "BWBBBWBB"));
-                Titles.add(new Title(set, "door", "WWWBBWBB"));
-                Titles.add(new Title(set, "empty", "WWWWWWWW"));
-                Titles.add(new Title(set, "side", "BBBBWWWB"));
-                Titles.add(new Title(set, "t", "BBBWBWBW"));
-                Titles.add(new Title(set, "turn", "BWBWBBBB"));
-                Titles.add(new Title(set, "wall", "BBBBBBBB"));
-                break;
-            case CIRCLES:
-                Titles.add(new Title(set, "b", "WBWBWBWB"));
-                Titles.add(new Title(set, "w", "BWBWBWBW"));
-                Titles.add(new Title(set, "b_half", "WBWWWWWW"));
-                Titles.add(new Title(set, "w_half", "BWBBBBBB"));
-                Titles.add(new Title(set, "b_i", "WBWWWBWW"));
-                Titles.add(new Title(set, "w_i", "BWBBBWBB"));
-                Titles.add(new Title(set, "b_quarter", "WBWBWWWW"));
-                Titles.add(new Title(set, "w_quarter", "BWBWBBBB"));
-                break;
-            default:
-                break;
+        if (set.setType == TitleSet.SetType.FROMSAMPLE || set.setType == TitleSet.SetType.FROMSAMPLENOTDERIVED) {
+            loadTitlesFromSample(set);
+        } else {
+            switch (set) {
+                case CIRCUIT:
+                    Titles.add(new Title(set, "bridge", "GBGWGBGW"));
+                    Titles.add(new Title(set, "component", "DDDDDDDD"));
+                    Titles.add(new Title(set, "connection", "GBGGDDDG"));
+                    Titles.add(new Title(set, "corner", "GGGGGGDG"));
+                    Titles.add(new Title(set, "dskew", "GBGBGBGB", true, false));
+                    Titles.add(new Title(set, "ecomponent", "GGGGDDDG"));
+                    Titles.add(new Title(set, "skew", "GBGBGGGG"));
+                    Titles.add(new Title(set, "substrate", "GGGGGGGG"));
+                    Titles.add(new Title(set, "t", "GGGBGBGB"));
+                    Titles.add(new Title(set, "track", "GBGGGBGG"));
+                    Titles.add(new Title(set, "transition", "GWGGGBGG"));
+                    Titles.add(new Title(set, "turn", "GBGBGGGG"));
+                    Titles.add(new Title(set, "viad", "GGGBGGGB"));
+                    Titles.add(new Title(set, "vias", "GBGGGGGG"));
+                    Titles.add(new Title(set, "wire", "GGGWGGGW"));
+                    break;
+                case CASTLE:
+                    Titles.add(new Title(set, "bridge", "GBGYGBGY"));
+                    Titles.add(new Title(set, "ground", "GGGGGGGG"));
+                    Titles.add(new Title(set, "river", "GBGGGBGG"));
+                    Titles.add(new Title(set, "riverturn", "GBGBGGGG"));
+                    Titles.add(new Title(set, "road", "GYGGGYGG"));
+                    Titles.add(new Title(set, "roadturn", "GYGYGGGG"));
+                    Titles.add(new Title(set, "t", "GGGYGYGY"));
+                    Titles.add(new Title(set, "tower", "GWGWGGGG", true));
+                    Titles.add(new Title(set, "wall", "GWGGGWGG"));
+                    Titles.add(new Title(set, "wallriver", "GWGBGWGB"));
+                    Titles.add(new Title(set, "wallroad", "GWGYGWGY"));
+                    break;
+                case KNOTS:
+                    Titles.add(new Title(set, "corner", "WCWCWWWW"));
+                    Titles.add(new Title(set, "cross", "WCWCWCWC"));
+                    Titles.add(new Title(set, "empty", "WWWWWWWW"));
+                    Titles.add(new Title(set, "line", "WWWCWWWC"));
+                    Titles.add(new Title(set, "t", "WWWCWCWC"));
+                    break;
+                case SIMPLE:
+                    Titles.add(new Title(set, "corner", "WCWCWWWW"));
+                    Titles.add(new Title(set, "cross", "WCWCWCWC"));
+                    Titles.add(new Title(set, "blank", "WWWWWWWW"));
+                    Titles.add(new Title(set, "line", "WWWCWWWC"));
+                    Titles.add(new Title(set, "t", "WWWCWCWC"));
+                    break;
+                case FLOORPLAN:
+                    Titles.add(new Title(set, "div", "GGGLGGGL"));
+                    Titles.add(new Title(set, "divt", "GGGLGLGL"));
+                    Titles.add(new Title(set, "divturn", "GLGLGGGG"));
+                    Titles.add(new Title(set, "door", "GGGLGGGL"));
+                    Titles.add(new Title(set, "empty", "WWWWWWWW"));
+                    Titles.add(new Title(set, "floor", "GGGGGGGG"));
+                    Titles.add(new Title(set, "glass", "GGGMWWWM"));
+                    Titles.add(new Title(set, "halfglass", "GGGMWWWD"));
+                    Titles.add(new Title(set, "in", "GGGGGDWD"));
+                    Titles.add(new Title(set, "out", "WDGDWWWW"));
+                    Titles.add(new Title(set, "stairs", "GGGLGSGL"));
+                    Titles.add(new Title(set, "table", "GGGGGGGG", true));
+                    Titles.add(new Title(set, "vent", "WWWWWWWW", true));
+                    Titles.add(new Title(set, "w", "GGGDWWWD", true));
+                    Titles.add(new Title(set, "wall", "GGGDWWWD"));
+                    Titles.add(new Title(set, "walldiv", "GLGDWWWD"));
+                    Titles.add(new Title(set, "window", "GGGDWWWD", true));
+                    break;
+                case ROOMS:
+                    Titles.add(new Title(set, "bend", "WBBBWWWW"));
+                    Titles.add(new Title(set, "corner", "BBWBBBBB"));
+                    Titles.add(new Title(set, "corridor", "BWBBBWBB"));
+                    Titles.add(new Title(set, "door", "WWWBBWBB"));
+                    Titles.add(new Title(set, "empty", "WWWWWWWW"));
+                    Titles.add(new Title(set, "side", "BBBBWWWB"));
+                    Titles.add(new Title(set, "t", "BBBWBWBW"));
+                    Titles.add(new Title(set, "turn", "BWBWBBBB"));
+                    Titles.add(new Title(set, "wall", "BBBBBBBB"));
+                    break;
+                case CIRCLES:
+                    Titles.add(new Title(set, "b", "WBWBWBWB"));
+                    Titles.add(new Title(set, "w", "BWBWBWBW"));
+                    Titles.add(new Title(set, "b_half", "WBWWWWWW"));
+                    Titles.add(new Title(set, "w_half", "BWBBBBBB"));
+                    Titles.add(new Title(set, "b_i", "WBWWWBWW"));
+                    Titles.add(new Title(set, "w_i", "BWBBBWBB"));
+                    Titles.add(new Title(set, "b_quarter", "WBWBWWWW"));
+                    Titles.add(new Title(set, "w_quarter", "BWBWBBBB"));
+                    break;
+                default:
+                    break;
+            }
         }
 
-        while (generateDerivedTiles()) {
-        }
+        if (set.setType != TitleSet.SetType.FROMSAMPLENOTDERIVED)
+            while (generateDerivedTiles());
+
     }
 
     /**
@@ -238,21 +348,39 @@ public class TitlesManager {
      */
     private static boolean generateDerivedTiles() {
         // Only process base tiles (non-derived)
-        List<Title> baseTitles = new ArrayList<>();
-        for (Title Title : Titles) {
-            baseTitles.add(Title);
-        }
+        List<Title> baseTitles = new ArrayList<>(Titles);
 
         boolean newAdded = false;
         // Process each base tile
         for (Title original : baseTitles) {
-            newAdded |= addIfNotExists(original, DerivedType.horizontalMirror,
-                    createHorizontallyMirroredDescription(original));
-            newAdded |= addIfNotExists(original, DerivedType.verticalMirror,
-                    createVerticallyMirroredDescription(original));
+            newAdded |= addIfNotExists(original, DerivedType.horizontalMirror,createHorizontallyMirroredDescription(original));
+            newAdded |= addIfNotExists(original, DerivedType.verticalMirror,createVerticallyMirroredDescription(original));
             newAdded |= addIfNotExists(original, DerivedType.clockwise90, createRotatedDescription(original, 90));
             newAdded |= addIfNotExists(original, DerivedType.clockwise180, createRotatedDescription(original, 180));
             newAdded |= addIfNotExists(original, DerivedType.getClockwise270, createRotatedDescription(original, 270));
+        }
+
+        return newAdded;
+    }
+
+
+    /**
+     * Generates derived versions of the base tiles through rotation and mirroring.
+     * <p>
+     * This method creates additional tiles by applying transformations to the base
+     * tiles:
+     * horizontal mirroring, vertical mirroring, and rotations (90, 180, 270
+     * degrees).
+     * </p>
+     */
+    private static boolean generateDerivedHorizontalTiles() {
+        // Only process base tiles (non-derived)
+        List<Title> baseTitles = new ArrayList<>(Titles);
+
+        boolean newAdded = false;
+        // Process each base tile
+        for (Title original : baseTitles) {
+            newAdded |= addIfNotExists(original, DerivedType.horizontalMirror,createHorizontallyMirroredDescription(original));
         }
 
         return newAdded;
@@ -280,15 +408,18 @@ public class TitlesManager {
      * @param description the description of the derived tile
      */
     private static boolean addIfNotExists(Title original, DerivedType type, String description) {
-        boolean descriptionExists = isDescriptionExists(description, original.originalName);
+        boolean descriptionExists;
+        if (original.getSet().getSetType().equals(SetType.FROMTITLES))
+            descriptionExists = isDescriptionExistsSameName(description, original.originalName);
+        else descriptionExists = isDescriptionExists(description);
         if (!descriptionExists
                 || (original.forceHorizontalMirror && derivedTypeIsHorizontalMirror(type))) {
             int insertIndex = findLastIndexWithName(original.originalName) + 1;
             Title newTitle = original.titleClone(description, type);
             Titles.add(insertIndex, newTitle);
-            // System.out.println("Origina "+original.originalName+" tipo" +
+            // System.out.println("Original "+original.originalName+" type" +
             // original.derivedType + " description" + original.sidesDescription);
-            // System.out.println("Se añade:"+newTitle.originalName+" tipo" +
+            // System.out.println("Added:"+newTitle.originalName+" type" +
             // newTitle.derivedType + " description" + newTitle.sidesDescription);
             return !descriptionExists;
         }
@@ -318,7 +449,7 @@ public class TitlesManager {
      * @param originalName the original name of the tile
      * @return true if a tile with the same description exists, false otherwise
      */
-    private static boolean isDescriptionExists(String description, String originalName) {
+    private static boolean isDescriptionExistsSameName(String description, String originalName) {
         for (Title Title : Titles) {
             // Only check tiles with the same original name
             if (Title.originalName.equals(originalName) &&
@@ -328,6 +459,21 @@ public class TitlesManager {
         }
         return false;
     }
+
+    /**
+     * Checks if a tile with the specified description already exists
+     * @param description  the description to check
+     * @return true if a tile with the same description exists, false otherwise
+     */
+    private static boolean isDescriptionExists(String description) {
+        for (Title Title : Titles) {
+            if (Title.sidesDescription.equals(description)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
 
     /**
      * Creates a horizontally mirrored description of a tile.
@@ -516,10 +662,6 @@ public class TitlesManager {
      * and rotations in 90-degree increments.
      */
     protected enum DerivedType {
-        /**
-         * No transformation applied
-         */
-        none,
         /**
          * Horizontally mirrored version
          */
@@ -769,18 +911,6 @@ public class TitlesManager {
          * @return list of possible Titles with their directions
          */
         public static List<TitleAndDirection> getPossibleTitles(int x, int y) {
-            return getPossibleTitles(x, y, null);
-        }
-
-        /**
-         * Gets possible Titles that can be placed at the specified position.
-         *
-         * @param x                   the x-coordinate
-         * @param y                   the y-coordinate
-         * @param forceEmptyDirection if not null, treat this direction as empty
-         * @return list of possible Titles with their directions
-         */
-        public static List<TitleAndDirection> getPossibleTitles(int x, int y, Direction forceEmptyDirection) {
             List<TitleAndDirection> possibleTitles = new ArrayList<>();
             int TitleIndex = TitleBoard.getTitleIndex(x, y);
 
@@ -794,62 +924,35 @@ public class TitlesManager {
                 return possibleTitles;
             }
 
-            Title actualTitle = Titles.get(TitleIndex);
+            // Check which directions have empty positions
+            boolean topEmpty = y > 0 && TitleBoard.getTitleIndex(x, y - 1) == -1;
+            boolean bottomEmpty = y < TitleBoard.getBoardHeight() - 1 && TitleBoard.getTitleIndex(x, y + 1) == -1;
+            boolean rightEmpty = x < TitleBoard.getBoardWidth() - 1 && TitleBoard.getTitleIndex(x + 1, y) == -1;
+            boolean leftEmpty = x > 0 && TitleBoard.getTitleIndex(x - 1, y) == -1;
 
-            // check Top
-            if (y > 0) {
-                int topTitleIndex = (forceEmptyDirection == Direction.TOP) ? -1 : TitleBoard.getTitleIndex(x, y - 1);
-                if (topTitleIndex == -1) {
-                    for (int i = 0; i < Titles.size(); i++) {
-                        Title candidate = Titles.get(i);
-                        if (compareArrays(actualTitle.top, candidate.bottom)
-                                && isCompatibleWithNeighbors(x, y - 1, i)) {
-                            possibleTitles.add(new TitleAndDirection(i, Direction.TOP));
-                        }
-                    }
+            // loop through all tiles
+            for (int i = 0; i < Titles.size(); i++) {
+                // Check top position
+                if (topEmpty && isCompatibleWithNeighbors(x, y - 1, i)) {
+                    possibleTitles.add(new TitleAndDirection(i, Direction.TOP));
+                }
+
+                // Check bottom position
+                if (bottomEmpty && isCompatibleWithNeighbors(x, y + 1, i)) {
+                    possibleTitles.add(new TitleAndDirection(i, Direction.BOTTOM));
+                }
+
+                // Check right position
+                if (rightEmpty && isCompatibleWithNeighbors(x + 1, y, i)) {
+                    possibleTitles.add(new TitleAndDirection(i, Direction.RIGHT));
+                }
+
+                // Check left position
+                if (leftEmpty && isCompatibleWithNeighbors(x - 1, y, i)) {
+                    possibleTitles.add(new TitleAndDirection(i, Direction.LEFT));
                 }
             }
-            // check Bottom
-            if (y < TitleBoard.getBoardHeight() - 1) {
-                int bottomTitleIndex = (forceEmptyDirection == Direction.BOTTOM) ? -1
-                        : TitleBoard.getTitleIndex(x, y + 1);
-                if (bottomTitleIndex == -1) {
-                    for (int i = 0; i < Titles.size(); i++) {
-                        Title candidate = Titles.get(i);
-                        if (compareArrays(actualTitle.bottom, candidate.top)
-                                && isCompatibleWithNeighbors(x, y + 1, i)) {
-                            possibleTitles.add(new TitleAndDirection(i, Direction.BOTTOM));
-                        }
-                    }
-                }
-            }
-            // check Right
-            if (x < TitleBoard.getBoardWidth() - 1) {
-                int rightTitleIndex = (forceEmptyDirection == Direction.RIGHT) ? -1
-                        : TitleBoard.getTitleIndex(x + 1, y);
-                if (rightTitleIndex == -1) {
-                    for (int i = 0; i < Titles.size(); i++) {
-                        Title candidate = Titles.get(i);
-                        if (compareArrays(actualTitle.right, candidate.left)
-                                && isCompatibleWithNeighbors(x + 1, y, i)) {
-                            possibleTitles.add(new TitleAndDirection(i, Direction.RIGHT));
-                        }
-                    }
-                }
-            }
-            // check Left
-            if (x > 0) {
-                int leftTitleIndex = (forceEmptyDirection == Direction.LEFT) ? -1 : TitleBoard.getTitleIndex(x - 1, y);
-                if (leftTitleIndex == -1) {
-                    for (int i = 0; i < Titles.size(); i++) {
-                        Title candidate = Titles.get(i);
-                        if (compareArrays(actualTitle.left, candidate.right)
-                                && isCompatibleWithNeighbors(x - 1, y, i)) {
-                            possibleTitles.add(new TitleAndDirection(i, Direction.LEFT));
-                        }
-                    }
-                }
-            }
+
             Collections.shuffle(possibleTitles);
             return possibleTitles;
         }
@@ -898,7 +1001,8 @@ public class TitlesManager {
                     Title rightTile = Titles.get(rightTileIndex);
                     if (rightTile.originalName.equals(tile.originalName) && tile.noSameNeighbor)
                         return false;
-                    return compareArrays(tile.right, rightTile.left);
+                    if (! compareArrays(tile.right, rightTile.left))
+                        return false;
                 }
             }
             // Tiles at edges are valid if they don't conflict with existing neighbors
@@ -963,6 +1067,31 @@ public class TitlesManager {
          */
         public static int getRandomTitleIndex() {
             return (int) (Math.random() * Titles.size());
+        }
+
+        /**
+         * Gets a random tile index.
+         *
+         * @return a random tile index with isBoottonTile true
+         */
+        public static int getRandomTitleIndexWithIsBoottonTrue() {
+            List<Integer> bottomTiles = new ArrayList<>();
+
+            // Collect all tile indices where isBoottonTile is true
+            for (int i = 0; i < Titles.size(); i++) {
+                if (Titles.get(i).isBoottonTile) {
+                    bottomTiles.add(i);
+                }
+            }
+
+            // If no bottom tiles found, return a random tile index as fallback
+            if (bottomTiles.isEmpty()) {
+                return (int) (Math.random() * Titles.size());
+            }
+
+            // Return a random index from the bottom tiles
+            Random random = new Random();
+            return bottomTiles.get(random.nextInt(bottomTiles.size()));
         }
 
         /**
@@ -1146,11 +1275,14 @@ public class TitlesManager {
         protected char[] left = new char[3];
 
         /**
+         * If the tipe is from sample no derived, we start the pattern with bottons tittles
+        */
+        protected  boolean isBoottonTile;
+        /**
          * Constructs a new tile with all parameters specified.
          *
          * @param name                  the name of the tile
          * @param sidesDescription      the 8-character description of the tile's sides
-         * @param derivedType           the transformation applied to this tile
          * @param forceHorizontalMirror flag to force horizontal mirroring
          */
         Title(TitleSet set, String name, String sidesDescription,
@@ -1206,7 +1338,7 @@ public class TitlesManager {
         public Title(TitleSet set, String name, String sidesDescription,
                 boolean forceHorizontalMirror, boolean noSameNeighbor) {
             this(set, name, sidesDescription, forceHorizontalMirror, noSameNeighbor,
-                    loadImageFromName(set, name, DerivedType.none));
+                    loadImageFromName(set, name));
         }
 
         /**
@@ -1218,7 +1350,31 @@ public class TitlesManager {
          *                         other
          */
         public Title(TitleSet set, String name, String sidesDescription, Boolean noSameNeighbor) {
-            this(set, name, sidesDescription, false, noSameNeighbor, loadImageFromName(set, name, DerivedType.none));
+            this(set, name, sidesDescription, false, noSameNeighbor, loadImageFromName(set, name));
+        }
+
+
+
+        /**
+         * Constructs a new base tile with no transformation.
+         *
+         * @param name             the name of the tile
+         * @param sidesDescription the 8-character description of the tile's sides
+         * @param noSameNeighbor   flag to prevent placing same tiles adjacent to each
+         */
+        public Title(TitleSet set, String name, String sidesDescription,boolean noSameNeighbor, Image image) {
+            this(set, name, sidesDescription, false, noSameNeighbor, image);
+        }
+
+
+        /**
+         * Constructs a new base tile with no transformation.
+         *
+         * @param name             the name of the tile
+         * @param sidesDescription the 8-character description of the tile's sides
+         */
+        public Title(TitleSet set, String name, String sidesDescription, Image image) {
+            this(set, name, sidesDescription, false, false, image);
         }
 
         /**
@@ -1233,32 +1389,27 @@ public class TitlesManager {
 
         private static Image transformImage(Image baseImage, DerivedType derivedType) {
             // Apply transformation based on derived type
-            switch (derivedType) {
-                case horizontalMirror:
-                    return createMirroredHorizontally(baseImage);
-                case verticalMirror:
-                    return createMirroredVertically(baseImage);
-                case clockwise90:
-                    return createRotatedImage(baseImage);
-                case clockwise180:
+            return switch (derivedType) {
+                case horizontalMirror -> createMirroredHorizontally(baseImage);
+                case verticalMirror -> createMirroredVertically(baseImage);
+                case clockwise90 -> createRotatedImage(baseImage);
+                case clockwise180 ->
                     // Rotate 90 degrees twice
-                    return createRotatedImage(createRotatedImage(baseImage));
-                case getClockwise270:
+                        createRotatedImage(createRotatedImage(baseImage));
+                case getClockwise270 ->
                     // Rotate 90 degrees three times
-                    return createRotatedImage(createRotatedImage(createRotatedImage(baseImage)));
-                default:
-                    return baseImage;
-            }
+                        createRotatedImage(createRotatedImage(createRotatedImage(baseImage)));
+                default -> baseImage;
+            };
         }
 
-        private static Image loadImageFromName(TitleSet set, String name, DerivedType derivedType) {
+        private static Image loadImageFromName(TitleSet set, String name) {
             // Load base image
             try {
                 String imagePath = "/" + set.getName() + "/" + name + ".png";
                 java.net.URL resource = Title.class.getResource(imagePath);
                 if (resource != null) {
-                    Image baseImage = new Image(resource.toExternalForm());
-                    return transformImage(baseImage, derivedType);
+                    return  new Image(resource.toExternalForm());
                 } else {
                     System.err.println("Warning: Could not find image resource: " + imagePath);
                     // Create a default empty image if resource is not found
