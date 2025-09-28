@@ -3,13 +3,15 @@ package principal;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.Image;
 import javafx.scene.paint.Color;
+import principal.TitlesManager.TitleSet;
+import principal.TitlesManager.TitleSet.SetType;
 
 import java.util.LinkedList;
 import java.util.Queue;
 
 /**
  * Renderer class for visualizing tiles in the Wave Function Collapse algorithm.
- * <p>
+ *<p>
  * This class handles the graphical representation of tiles on a grid-based
  * canvas.
  * It supports animation through an action queue system that can draw tiles with
@@ -20,7 +22,7 @@ class Renderer {
 
     /**
      * Queue of actions to be performed during animation
-     */
+*/
     protected static final Queue<Action> actionQueue = new LinkedList<>();
     /**
      * JavaFX graphics context for drawing
@@ -33,7 +35,7 @@ class Renderer {
     protected Color backGroundColor;
     /**
      * Size of each cell in pixels
-     */
+*/
     protected int PIXEL_SIZE;
     /**
      * Flag indicating if continuous iteration is active
@@ -46,17 +48,17 @@ class Renderer {
 
     /**
      * Creates a new Renderer for tile visualization.
-     *
+*
      * @param gc              the graphics context to draw on (must not be null)
      * @param w               canvas width in pixels (must be positive)
      * @param h               canvas height in pixels (must be positive)
-     * @param pPIXEL_SIZE     the size of each pixel in the visualization
+     * @param pPIXEL_SIZE     the size of each pixel inthe visualization
      * @param backGroundColor color for the background
      * @throws IllegalArgumentException if gc is null or dimensions are invalid
      */
     public Renderer(GraphicsContext gc, int w, int h, int pPIXEL_SIZE, Color backGroundColor) {
         PIXEL_SIZE = pPIXEL_SIZE;
-        if (gc == null) {
+if (gc == null) {
             throw new IllegalArgumentException("GraphicsContext cannot be null");
         }
         if (w <= 0 || h <= 0) {
@@ -66,7 +68,7 @@ class Renderer {
         this.backGroundColor = backGroundColor;
         this.gc = gc;
 
-    }
+}
 
     /**
      * Updates the frame by processing one iteration if running.
@@ -80,7 +82,7 @@ class Renderer {
     }
 
     /**
-     * Processes one iteration of the animation queue.
+     * Processesone iteration of the animation queue.
      * Executes the current action and removes it when complete.
      */
     public void iteration() {
@@ -90,7 +92,7 @@ class Renderer {
         Action action = actionQueue.peek();
         // Add null check to prevent NullPointerException
         if (action == null) {
-            return;
+return;
         }
         boolean finished;
         switch (action.getInstruction()) {
@@ -118,18 +120,18 @@ class Renderer {
      * Draws tiles according to the specified action.
      *
      * @param action the action containing tile drawing information
-     * @return true if the drawing is complete, false otherwise
+     * @returntrue if the drawing is complete, false otherwise
      */
     private boolean drawTitles(Action action) {
         int tileNumber = action.getTotalStages() - action.getStage() + 1;
         // System.out.println("Drawing tile " + tileNumber + " of " +
         // action.getTotalStages());
-        TitlesManager.PointInt pos = TitlesManager.TitleBoard.getTitlePosByNumber(tileNumber);
+       TitlesManager.PointInt pos = TitlesManager.TitleBoard.getTitlePosByNumber(tileNumber);
         if (pos != null) {
             int tileIndex = TitlesManager.TitleBoard.getTitleIndex(pos.x(), pos.y());
             // System.out.println("Position: (" + pos.getX() + "," + pos.getY() + "),
-            // tileIndex: " + tileIndex);            
-            drawTile(tileIndex, pos.x(), pos.y(),TitlesManager.getTitleSize(tileIndex));
+            //tileIndex: " + tileIndex);            
+            drawTile(tileIndex, pos.x(), pos.y(),TitlesManager.getTitleSize(tileIndex),false);
         } else {
             // System.out.println("Position is null for tile number " + tileNumber);
         }
@@ -137,14 +139,18 @@ class Renderer {
     }
 
     /**
-     * Draws a single tile according to the specified action.
+     *Draws a single tile according to the specified action.
      *
      * @param action the action containing tile drawing information
      * @return true if the drawing is complete, false otherwise
      */
     private boolean drawTitle(Action action) {
         int tileIndex = TitlesManager.TitleBoard.getTitleIndex(action.x, action.y);
-        drawTile(tileIndex, action.x, action.y,TitlesManager.getTitleSize(tileIndex));
+        if (tileIndex==-1) return action.endStage(); 
+        boolean overlap= false;
+        TitlesManager.Title title=TitlesManager.getTitle(tileIndex);
+        if(title!=null) overlap=(title.getSet().getSetType().hasOverload());
+        drawTile(tileIndex, action.x, action.y,TitlesManager.getTitleSize(tileIndex),overlap);
         return action.endStage();
     }
 
@@ -155,8 +161,12 @@ class Renderer {
      * @return true if the removal is complete, false otherwise
      */
     private boolean delTitle(Action action) {
-        int tileIndex = TitlesManager.TitleBoard.getTitleIndex(action.x, action.y);        
-        delTile(action.x, action.y,TitlesManager.getTitleSize(tileIndex));
+        int tileIndex = TitlesManager.TitleBoard.getTitleIndex(action.x, action.y); 
+        if (tileIndex==-1) return action.endStage(); 
+        boolean overlap= false;
+        TitlesManager.Title title=TitlesManager.getTitle(tileIndex);
+        if(title!=null) overlap=(title.getSet().getSetType().hasOverload());
+        delTile(action.x, action.y,TitlesManager.getTitleSize(tileIndex),overlap);
         return action.endStage();
     }
 
@@ -180,7 +190,7 @@ class Renderer {
 
     /**
      * Stops the continuous iteration mode.
-     * When stopped, the visualization will pause and wait for manual control.
+    * When stopped, the visualization will pause and wait for manual control.
      */
     public void stopIteration() {
         runningIteration = false;
@@ -190,11 +200,11 @@ class Renderer {
      * Draws a tile at the specified position
      *
      * @param i the index of the tile to draw
-     * @param x the x position to draw the tile
+     * @param x the xposition to draw the tile
      * @param y the y position to draw the tile
      * @param size the size of the tile
      */
-    public void drawTile(int i, int x, int y,int size) {
+    public void drawTile(int i, int x, int y,int size,boolean overlap) {
         // Get the tile from CircuitTitles
         TitlesManager.Title tile = TitlesManager.getTitle(i);
         if (tile == null) {
@@ -208,14 +218,17 @@ class Renderer {
         }
 
         // Calculate screen position
-        int screenX = x * PIXEL_SIZE * size;
-        int screenY = y * PIXEL_SIZE * size;
+        int screenX = x * PIXEL_SIZE *(overlap?3:size);
+        int screenY = y * PIXEL_SIZE * (overlap?3:size);
 
         // Draw the tile image scaled so each pixel becomes a PIXEL_SIZE square
         // If the image is 14x14 and PIXEL_SIZE is 4, the drawn size should be 56x56
         // (14*4 x 14*4)
-        double drawnWidth = tileImage.getWidth() * PIXEL_SIZE;
-        double drawnHeight = tileImage.getHeight() * PIXEL_SIZE;
+        
+        // pixel-perfect
+        gc.setImageSmoothing(false);
+        double drawnWidth = tileImage.getWidth() * PIXEL_SIZE* (overlap?3:1);
+        double drawnHeight = tileImage.getHeight() * PIXEL_SIZE*(overlap?3:1);
         gc.drawImage(tileImage, screenX, screenY, drawnWidth, drawnHeight);
     }
 
@@ -223,19 +236,18 @@ class Renderer {
      * Removes a tile from the specified position by clearing the area with the
      * background color.
      *
-     * @param x the x position of the tile to remove
-     * @param y the y position of the tile to remove
+     * @param x the x position of the tile to remove* @param y the y position of the tile to remove
      * @param size the size of the tile
      */
-    public void delTile(int x, int y,int size) {
+    public void delTile(int x, int y,int size,boolean overlap) {
         // Calculate screen position and size
-        int screenX = x * PIXEL_SIZE * size;
-        int screenY = y * PIXEL_SIZE * size;
-        int tileSize = size * PIXEL_SIZE;
+        int screenX = x * PIXEL_SIZE * (overlap?3:size);
+        int screenY = y * PIXEL_SIZE * (overlap?3:size);
+        int tileSize = (overlap?3:size) * PIXEL_SIZE;
 
         // Clear the area by filling it with the background color
         gc.setFill(backGroundColor);
-        gc.fillRect(screenX, screenY, tileSize, tileSize);
+        gc.fillRect(screenX, screenY, tileSize,tileSize);
     }
 
     /**
@@ -246,7 +258,7 @@ class Renderer {
      * purposes.
      * </p>
      */
-    protected static class Action {
+    protected static class Action{
 
         /**
          * X coordinate for the action
@@ -261,8 +273,7 @@ class Renderer {
          */
         private final Operations instruction;
         /**
-         * Total number of stages for this action
-         */
+         * Total number of stages for this action*/
         private final int totalStages;
         /**
          * Current animation stage counter
@@ -291,7 +302,7 @@ class Renderer {
          */
         private int getInstructionStageNumber() {
             return switch (instruction) {
-                case DRAW_TitleS -> TitlesManager.TitleBoard.getNumberOfTitles();
+               case DRAW_TitleS -> TitlesManager.TitleBoard.getNumberOfTitles();
                 case ADD_Title, DEL_Title -> 1;
             };
         }
@@ -306,7 +317,7 @@ class Renderer {
         }
 
         /**
-         * Advances the animation by one stage.
+        * Advances the animation by one stage.
          *
          * @return true if the animation is complete, false if more stages remain
          */
@@ -318,7 +329,7 @@ class Renderer {
         /**
          * Gets the current stage number.
          *
-         * @return the current stage number
+         * @return thecurrent stage number
          */
         public int getStage() {
             return stage;
@@ -334,7 +345,7 @@ class Renderer {
         }
 
         /**
-         * Enum representing the different types of operations that can be performed.
+         * Enumrepresenting the different types of operations that can be performed.
          */
         public enum Operations {
             /**
@@ -346,7 +357,7 @@ class Renderer {
              */
             ADD_Title,
             /**
-             * Operation to remove a tile from the board
+             * Operation to remove a tilefrom the board
              */
             DEL_Title
         }

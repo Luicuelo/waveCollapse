@@ -8,6 +8,7 @@ import javafx.scene.paint.Color;
 import principal.TitlesManager.TitleSet.SetType;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
@@ -49,15 +50,25 @@ public class TitlesManager {
         KNOT("Knot", 3, SetType.FROMSAMPLE),
         MAZE("Maze", 3, SetType.FROMSAMPLE),
         COLCITY("ColoredCity", 3, SetType.FROMSAMPLE),        
-        CITY("City", 3, SetType.FROMSAMPLE),        
+        CITY("City", 3, SetType.FROMSAMPLE),                
+        SKYLINE("Skyline",3,SetType.FROMSAMPLE),
         WATER("Water", 3, SetType.FROMSAMPLE),
-        SKYLINE("Skyline",3,SetType.FROMSAMPLENOTDERIVED);
+        FLOWERS("Flowers",3,SetType.FROMSAMPLEOVERLAPWS),
+        SIMPLEWALL("SimpleWall",3,SetType.FROMSAMPLEOVERLAP),
+        PATHS("Paths",3,SetType.FROMSAMPLEOVERLAP)
+        ;
 
 
         protected static enum SetType {
             FROMTITLES,
             FROMSAMPLE,
-            FROMSAMPLENOTDERIVED
+            FROMSAMPLEOVERLAP,
+            FROMSAMPLEOVERLAPWS;
+
+            protected boolean hasOverload(){
+                if (this.equals(FROMSAMPLEOVERLAP)||this.equals(FROMSAMPLEOVERLAPWS)) return true;
+                return false;
+            }
         }
 
         protected static class StringFromColors {
@@ -103,6 +114,9 @@ public class TitlesManager {
         }
     }
 
+    /**
+     * List of all available tiles
+     */
     private static final List<Title> Titles = new ArrayList<>();
 
     private static WritableImage copy3x3Region(PixelReader source, int startX, int startY) {
@@ -137,6 +151,12 @@ public class TitlesManager {
         return cad.toString();
     }
 
+
+    private static String getMidDescriptionFromImage(TitleSet set, PixelReader source) {
+
+        return(set.getStringFromColor(source.getArgb(1, 1))); // right-center
+    }
+
     public static void loadTitlesFromSample(TitleSet set) {
         // Load base image
         Image baseImage = null;
@@ -152,7 +172,7 @@ public class TitlesManager {
             System.err.println("Warning: Failed to load image for sample: " + set.getName());
             e.printStackTrace();
         }
-        // We are going to createte titles from sample , geting 3x3 portions.
+        // We are going to create tiles from sample, getting 3x3 portions.
 
         if (baseImage == null)
             return;
@@ -166,11 +186,13 @@ public class TitlesManager {
             for (int x = 0; x <= sampleWidth - 3; x++) {
                 WritableImage subImage = copy3x3Region(baseReader, x, y);
                 String description = getDescriptionFromImage(set, subImage.getPixelReader());
-                if(!isDescriptionExists(description)) {
+                String descriptionMid=getMidDescriptionFromImage(set, subImage.getPixelReader());
+                if(!isDescriptionExists(description,descriptionMid)) {
                     //System.out.println(set.getName() + "_" + x + "_" + y+" with Description "+description);
-                    Title newTitle = new Title(set, set.getName() + "_" + x + "_" + y, description, subImage);
-                    if (set.getSetType() == TitleSet.SetType.FROMSAMPLENOTDERIVED && (y == (sampleHeight - 3)) ) {
-                         newTitle.isBoottonTile = true;
+                    Title newTitle = new Title(set, set.getName() + "_" + x + "_" + y, description, descriptionMid,false,subImage);
+                    if (set.getSetType().hasOverload()                    
+                        && (y == (sampleHeight - 3)) ) {
+                         newTitle.isBottomTile = true;
                     }
                     Titles.add(newTitle);
                 }
@@ -196,7 +218,7 @@ public class TitlesManager {
      */
     public static void loadTitles(TitleSet set) {
         Titles.clear();
-        if (set.setType == TitleSet.SetType.FROMSAMPLE || set.setType == TitleSet.SetType.FROMSAMPLENOTDERIVED) {
+        if (set.setType == TitleSet.SetType.FROMSAMPLE || set.setType.hasOverload()) {
             loadTitlesFromSample(set);
         } else {
             switch (set) {
@@ -289,8 +311,7 @@ public class TitlesManager {
             }
         }
 
-        if (set.setType != TitleSet.SetType.FROMSAMPLENOTDERIVED)
-            while (generateDerivedTiles());
+        while (generateDerivedTiles());
 
     }
 
@@ -316,6 +337,12 @@ public class TitlesManager {
         return "";
     }
 
+    /**
+     * Gets the size of a tile at the specified index.
+     *
+     * @param index the index of the tile
+     * @return the size of the tile, or -1 if the index is invalid
+     */
     public static int getTitleSize(int index) {
         if (index >= 0 && index < Titles.size()) {
             return Titles.get(index).getSet().getSize();
@@ -332,7 +359,7 @@ public class TitlesManager {
     public static String getTitleInfo(int index) {
         if (index >= 0 && index < Titles.size()) {
             Title t = Titles.get(index);
-            return t.originalName + " (" + t.sidesDescription + ")";
+            return t.originalName + " (" + t.sidesDescription + "con mid: " + t.midDescription +")";
         }
         return "Unknown tile";
     }
@@ -408,10 +435,11 @@ public class TitlesManager {
      * @param description the description of the derived tile
      */
     private static boolean addIfNotExists(Title original, DerivedType type, String description) {
+        String midDescription =original.midDescription;
         boolean descriptionExists;
         if (original.getSet().getSetType().equals(SetType.FROMTITLES))
             descriptionExists = isDescriptionExistsSameName(description, original.originalName);
-        else descriptionExists = isDescriptionExists(description);
+        else descriptionExists = isDescriptionExists(description,midDescription);
         if (!descriptionExists
                 || (original.forceHorizontalMirror && derivedTypeIsHorizontalMirror(type))) {
             int insertIndex = findLastIndexWithName(original.originalName) + 1;
@@ -465,9 +493,9 @@ public class TitlesManager {
      * @param description  the description to check
      * @return true if a tile with the same description exists, false otherwise
      */
-    private static boolean isDescriptionExists(String description) {
+    private static boolean isDescriptionExists(String description,String midDescription) {
         for (Title Title : Titles) {
-            if (Title.sidesDescription.equals(description)) {
+            if (Title.sidesDescription.equals(description)&&Title.midDescription.equals(midDescription)) {
                 return true;
             }
         }
@@ -828,7 +856,7 @@ public class TitlesManager {
         }
 
         /**
-         * gets the position with less possible Title
+         * Gets the position with less possible Title
          *
          * @return the position with less possible Title
          * @throws IllegalArgumentException if the index is invalid
@@ -867,43 +895,6 @@ public class TitlesManager {
         }
 
         /**
-         * Finds an impossible position near the given cell by checking its neighbors.
-         * This is more efficient than searching the entire board when we already know
-         * a problematic area.
-         *
-         * @param x the x-coordinate of the reference cell
-         * @param y the y-coordinate of the reference cell
-         * @return the position of an impossible neighbor cell, or null if none found
-         */
-        public static PointInt findImpossiblePositionNear(int x, int y) {
-            // Check all adjacent positions
-            int[][] neighbors = { { x - 1, y }, { x + 1, y }, { x, y - 1 }, { x, y + 1 } };
-
-            for (int[] neighbor : neighbors) {
-                int nx = neighbor[0];
-                int ny = neighbor[1];
-
-                // Check bounds
-                if (nx >= 0 && nx < getBoardWidth() && ny >= 0 && ny < getBoardHeight()) {
-                    // Check only empty cells
-                    if (getTitleIndex(nx, ny) == -1) {
-                        // Check if this position has any adjacent filled tiles
-                        boolean hasAdjacent = (nx > 0 && getTitleIndex(nx - 1, ny) != -1) ||
-                                (nx < getBoardWidth() - 1 && getTitleIndex(nx + 1, ny) != -1) ||
-                                (ny > 0 && getTitleIndex(nx, ny - 1) != -1) ||
-                                (ny < getBoardHeight() - 1 && getTitleIndex(nx, ny + 1) != -1);
-
-                        // If this empty cell has adjacent tiles, check if any tiles can be placed here
-                        if (hasAdjacent && getPossibleTilesForEmptyPosition(nx, ny).isEmpty()) {
-                            return new PointInt(nx, ny);
-                        }
-                    }
-                }
-            }
-            return null;
-        }
-
-        /**
          * Gets possible Titles that can be placed at the specified position.
          *
          * @param x the x-coordinate
@@ -913,16 +904,23 @@ public class TitlesManager {
         public static List<TitleAndDirection> getPossibleTitles(int x, int y) {
             List<TitleAndDirection> possibleTitles = new ArrayList<>();
             int TitleIndex = TitleBoard.getTitleIndex(x, y);
-
+            
+            //System.out.println("DEBUG getPossibleTitles: position (" + x + "," + y + ") has tile " + TitleIndex);
+            
             // If the position is empty, return an empty list
             if (TitleIndex == -1) {
+                //System.out.println("DEBUG getPossibleTitles: position is empty, returning empty list");
                 return possibleTitles;
             }
 
             // Make sure the index is valid before accessing the tile
             if (TitleIndex < 0 || TitleIndex >= Titles.size()) {
+                //System.out.println("DEBUG getPossibleTitles: invalid tile index " + TitleIndex);
                 return possibleTitles;
             }
+
+            Title title=Titles.get(TitleIndex);
+            boolean overlap=title.getSet().getSetType().hasOverload();
 
             // Check which directions have empty positions
             boolean topEmpty = y > 0 && TitleBoard.getTitleIndex(x, y - 1) == -1;
@@ -930,35 +928,48 @@ public class TitlesManager {
             boolean rightEmpty = x < TitleBoard.getBoardWidth() - 1 && TitleBoard.getTitleIndex(x + 1, y) == -1;
             boolean leftEmpty = x > 0 && TitleBoard.getTitleIndex(x - 1, y) == -1;
 
+            //System.out.println("DEBUG getPossibleTitles: empty directions - top:" + topEmpty + " bottom:" + bottomEmpty + " right:" + rightEmpty + " left:" + leftEmpty);
+
             // loop through all tiles
             for (int i = 0; i < Titles.size(); i++) {
                 // Check top position
-                if (topEmpty && isCompatibleWithNeighbors(x, y - 1, i)) {
+                if (topEmpty && isCompatibleWithNeighbors(x, y - 1, i,overlap)) {
                     possibleTitles.add(new TitleAndDirection(i, Direction.TOP));
+                    //System.out.println("DEBUG getPossibleTitles: tile " + i + " compatible at TOP");
                 }
 
                 // Check bottom position
-                if (bottomEmpty && isCompatibleWithNeighbors(x, y + 1, i)) {
+                if (bottomEmpty && isCompatibleWithNeighbors(x, y + 1, i,overlap)) {
                     possibleTitles.add(new TitleAndDirection(i, Direction.BOTTOM));
+                    //System.out.println("DEBUG getPossibleTitles: tile " + i + " compatible at BOTTOM");
                 }
 
                 // Check right position
-                if (rightEmpty && isCompatibleWithNeighbors(x + 1, y, i)) {
+                if (rightEmpty && isCompatibleWithNeighbors(x + 1, y, i,overlap)) {
                     possibleTitles.add(new TitleAndDirection(i, Direction.RIGHT));
+                    //System.out.println("DEBUG getPossibleTitles: tile " + i + " compatible at RIGHT");
                 }
 
                 // Check left position
-                if (leftEmpty && isCompatibleWithNeighbors(x - 1, y, i)) {
+                if (leftEmpty && isCompatibleWithNeighbors(x - 1, y, i,overlap)) {
                     possibleTitles.add(new TitleAndDirection(i, Direction.LEFT));
+                    //System.out.println("DEBUG getPossibleTitles: tile " + i + " compatible at LEFT");
                 }
             }
 
+            //System.out.println("DEBUG "+TitlesManager.getTitleInfo(TitleIndex) +" "+ "getPossibleTitles: found " + possibleTitles.size() + " compatible tiles");
             Collections.shuffle(possibleTitles);
             return possibleTitles;
         }
 
-        private static boolean isCompatibleWithNeighbors(int x, int y, int tileIndex) {
-            Title tile = Titles.get(tileIndex);
+        private static boolean isCompatibleWithNeighbors(int x, int y, int tileIndex, boolean overlap) {
+                        Title tile = Titles.get(tileIndex);
+
+            /*
+            if (overlap) {
+                System.out.println("DEBUG: Checking compatibility for tile " + tileIndex + " at (" + x + "," + y + ")");
+                System.out.println("DEBUG: Tile description: " + tile.sidesDescription);
+            } */
 
             // Check compatibility with all adjacent tiles that exist
             // Top
@@ -966,10 +977,28 @@ public class TitlesManager {
                 int topTileIndex = getTitleIndex(x, y - 1);
                 if (topTileIndex != -1) {
                     Title topTile = Titles.get(topTileIndex);
-                    if (topTile.originalName.equals(tile.originalName) && tile.noSameNeighbor)
+                    //System.out.println("  Top neighbor: " + topTile.sidesDescription);
+                    //System.out.println("  Comparing tile.horizontalMid vs topTile.bottom: " + Arrays.toString(tile.horizontalMid) + " vs " + Arrays.toString(topTile.bottom));
+                    //System.out.println("  Comparing tile.top vs topTile.horizontalMid: " + Arrays.toString(tile.top) + " vs " + Arrays.toString(topTile.horizontalMid));
+                
+                    if (topTile.originalName.equals(tile.originalName) && tile.noSameNeighbor){
                         return false;
-                    if (!compareArrays(tile.top, topTile.bottom))
-                        return false;
+                    }
+                    if (!overlap) {
+                        if (!compareArrays(tile.top, topTile.bottom)){
+                            //System.out.println("  FAILED: horizontalMid vs bottom");
+                            return false;
+                        }
+                    } else {
+                        if (!compareArrays(tile.horizontalMid, topTile.bottom)){
+                            //System.out.println("  FAILED: horizontalMid vs bottom");
+                            return false;
+                        } 
+                        if (!compareArrays(tile.top, topTile.horizontalMid)){
+                            //System.out.println("  FAILED: top vs horizontalMid");
+                            return false;
+                        } 
+                    }
                 }
             }
             // Bottom
@@ -979,8 +1008,13 @@ public class TitlesManager {
                     Title bottomTile = Titles.get(bottomTileIndex);
                     if (bottomTile.originalName.equals(tile.originalName) && tile.noSameNeighbor)
                         return false;
-                    if (!compareArrays(tile.bottom, bottomTile.top))
-                        return false;
+                    if (!overlap) {
+                        if (!compareArrays(tile.bottom, bottomTile.top))
+                            return false;
+                    } else {
+                        if (!compareArrays(tile.horizontalMid, bottomTile.top)) return false;
+                        if (!compareArrays(tile.bottom, bottomTile.horizontalMid)) return false;
+                    }
                 }
             }
             // Left
@@ -990,8 +1024,12 @@ public class TitlesManager {
                     Title leftTile = Titles.get(leftTileIndex);
                     if (leftTile.originalName.equals(tile.originalName) && tile.noSameNeighbor)
                         return false;
-                    if (!compareArrays(tile.left, leftTile.right))
-                        return false;
+                    if (!overlap) {
+                        if (!compareArrays(tile.left, leftTile.right)) return false;
+                    } else {
+                        if (!compareArrays(tile.verticalMid, leftTile.right)) return false;
+                        if (!compareArrays(tile.left, leftTile.verticalMid)) return false;
+                    }
                 }
             }
             // Right
@@ -1001,12 +1039,42 @@ public class TitlesManager {
                     Title rightTile = Titles.get(rightTileIndex);
                     if (rightTile.originalName.equals(tile.originalName) && tile.noSameNeighbor)
                         return false;
-                    if (! compareArrays(tile.right, rightTile.left))
-                        return false;
+                    if (!overlap) {
+                        if (!compareArrays(tile.right, rightTile.left)) return false;
+                    } else {
+                        if (!compareArrays(tile.verticalMid, rightTile.left)) return false;
+                        if (!compareArrays(tile.right, rightTile.verticalMid)) return false;
+                    }
                 }
             }
             // Tiles at edges are valid if they don't conflict with existing neighbors
             return true;
+        }
+
+        public static List<PointInt> getEmptyTitles(int x, int y) {
+            List<PointInt> list =new ArrayList<>();
+
+            if (y > 0 && getTitleIndex(x, y - 1) == -1) {
+                list.add(new PointInt(x, y - 1));
+            }
+
+            // Check bottom neighbor
+            if (y < getBoardHeight() - 1 && getTitleIndex(x, y + 1) == -1) {
+                list.add(new PointInt(x, y + 1));
+            }
+
+            // Check left neighbor
+            if (x > 0 && getTitleIndex(x - 1, y) == -1) {
+                list.add(new PointInt(x - 1, y));
+            }
+
+            // Check right neighbor
+            if (x < getBoardWidth() - 1 && getTitleIndex(x + 1, y) == -1) {
+                list.add(new PointInt(x + 1, y));
+            }
+
+            return list;
+
         }
 
         /**
@@ -1072,14 +1140,14 @@ public class TitlesManager {
         /**
          * Gets a random tile index.
          *
-         * @return a random tile index with isBoottonTile true
+         * @return a random tile index with isBottomTile true
          */
-        public static int getRandomTitleIndexWithIsBoottonTrue() {
+        public static int getRandomTitleIndexWithIsBottomTrue() {
             List<Integer> bottomTiles = new ArrayList<>();
 
-            // Collect all tile indices where isBoottonTile is true
+            // Collect all tile indices where isBottomTile is true
             for (int i = 0; i < Titles.size(); i++) {
-                if (Titles.get(i).isBoottonTile) {
+                if (Titles.get(i).isBottomTile) {
                     bottomTiles.add(i);
                 }
             }
@@ -1094,30 +1162,7 @@ public class TitlesManager {
             return bottomTiles.get(random.nextInt(bottomTiles.size()));
         }
 
-        /**
-         * Gets possible tiles that can be placed at an empty position.
-         *
-         * @param x the x-coordinate of the empty position
-         * @param y the y-coordinate of the empty position
-         * @return list of possible tiles that can be placed at this position
-         */
-        public static List<Integer> getPossibleTilesForEmptyPosition(int x, int y) {
-            List<Integer> possibleTiles = new ArrayList<>();
 
-            // Check that the position is actually empty
-            if (getTitleIndex(x, y) != -1) {
-                return possibleTiles; // Position is not empty
-            }
-
-            // Check all possible tiles that could be placed at this empty position
-            for (int i = 0; i < Titles.size(); i++) {
-                if (isCompatibleWithNeighbors(x, y, i)) {
-                    possibleTiles.add(i);
-                }
-            }
-
-            return possibleTiles;
-        }
 
         /**
          * Represents the four possible directions in the grid: top, bottom, left, and
@@ -1248,6 +1293,10 @@ public class TitlesManager {
          */
         private final String sidesDescription;
         /**
+         * Description of the tile's mid using color codes
+         */
+        private final String midDescription;
+        /**
          * Flag to force horizontal mirroring for special cases
          */
         private final boolean forceHorizontalMirror;
@@ -1273,11 +1322,19 @@ public class TitlesManager {
          * Characters representing the left side zones (top, center, bottom)
          */
         protected char[] left = new char[3];
+        /**
+         * Characters representing the mid horizontal
+         */
+        protected char[] horizontalMid = new char[3];
+        /**
+         * Characters representing the mid vertical
+         */
+        protected char[] verticalMid = new char[3];
 
         /**
-         * If the tipe is from sample no derived, we start the pattern with bottons tittles
-        */
-        protected  boolean isBoottonTile;
+         * If the type is from sample no derived, we start the pattern with bottom tiles
+         */
+        protected boolean isBottomTile;
         /**
          * Constructs a new tile with all parameters specified.
          *
@@ -1285,7 +1342,7 @@ public class TitlesManager {
          * @param sidesDescription      the 8-character description of the tile's sides
          * @param forceHorizontalMirror flag to force horizontal mirroring
          */
-        Title(TitleSet set, String name, String sidesDescription,
+        Title(TitleSet set, String name, String sidesDescription, String midDescription,
                 boolean forceHorizontalMirror, boolean noSameNeighbor, Image tileImage) {
 
             this.set = set;
@@ -1293,6 +1350,7 @@ public class TitlesManager {
             this.forceHorizontalMirror = forceHorizontalMirror;
             this.originalName = name;
             this.sidesDescription = sidesDescription;
+            this.midDescription = midDescription;
 
             if (sidesDescription.length() != 8) {
                 throw new IllegalArgumentException("sidesDescription must have exactly 8 characters");
@@ -1318,13 +1376,24 @@ public class TitlesManager {
             left[1] = sidesDescription.charAt(7);
             left[2] = sidesDescription.charAt(6);
 
+            //horizontal mid =
+            horizontalMid[0]=left[1];
+            horizontalMid[1]=midDescription.length()>0?midDescription.charAt(0):0;
+            horizontalMid[2]=right[1];
+
+            //vertical mid
+            verticalMid[0]=top[1];
+            verticalMid[1]=midDescription.length()>0?midDescription.charAt(0):0;
+            verticalMid[2]=bottom[1];
+
+
             this.image = tileImage;
 
         }
 
-        protected Title titleClone(String newSidesDescription, DerivedType newDerivedType) {
+        protected Title titleClone(String newSidesDescription,DerivedType newDerivedType) {
             Image newImage = transformImage(this.image, newDerivedType);
-            return new Title(set, originalName, newSidesDescription, false, noSameNeighbor, newImage);
+            return new Title(set, originalName, newSidesDescription, midDescription, false, noSameNeighbor, newImage);
         }
 
         /**
@@ -1337,7 +1406,7 @@ public class TitlesManager {
          */
         public Title(TitleSet set, String name, String sidesDescription,
                 boolean forceHorizontalMirror, boolean noSameNeighbor) {
-            this(set, name, sidesDescription, forceHorizontalMirror, noSameNeighbor,
+            this(set, name, sidesDescription,"", forceHorizontalMirror, noSameNeighbor,
                     loadImageFromName(set, name));
         }
 
@@ -1350,7 +1419,7 @@ public class TitlesManager {
          *                         other
          */
         public Title(TitleSet set, String name, String sidesDescription, Boolean noSameNeighbor) {
-            this(set, name, sidesDescription, false, noSameNeighbor, loadImageFromName(set, name));
+            this(set, name, sidesDescription, "",false, noSameNeighbor, loadImageFromName(set, name));
         }
 
 
@@ -1362,8 +1431,8 @@ public class TitlesManager {
          * @param sidesDescription the 8-character description of the tile's sides
          * @param noSameNeighbor   flag to prevent placing same tiles adjacent to each
          */
-        public Title(TitleSet set, String name, String sidesDescription,boolean noSameNeighbor, Image image) {
-            this(set, name, sidesDescription, false, noSameNeighbor, image);
+        public Title(TitleSet set, String name, String sidesDescription,String midDescription, boolean noSameNeighbor, Image image) {
+            this(set, name, sidesDescription,midDescription, false, noSameNeighbor, image);
         }
 
 
@@ -1374,7 +1443,7 @@ public class TitlesManager {
          * @param sidesDescription the 8-character description of the tile's sides
          */
         public Title(TitleSet set, String name, String sidesDescription, Image image) {
-            this(set, name, sidesDescription, false, false, image);
+            this(set, name, sidesDescription,"", false, false, image);
         }
 
         /**

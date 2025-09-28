@@ -300,26 +300,37 @@ public class WaveFunction extends Application {
      */
     private void beginCollapse() {
         ArrayDeque<CollapseState> stack = new ArrayDeque<>();
-        final int MAX_STACK_SIZE = 100;
+        final int MAX_STACK_SIZE = 300;
 
         HashMap<TitlesManager.PointInt, Integer> lastImpossiblePosMap = new HashMap<>();
 
+        //System.out.println("DEBUG: Starting beginCollapse with " + TitlesManager.TitleBoard.getNumberOfTitles() + " tiles on board");
 
         while (!shouldStopCollapse) {
-            TitlesManager.PointInt bestTitlePosition = TitlesManager.TitleBoard.getPosWithLessPossibleTitle();
-            if (bestTitlePosition == null) {
+
+            TitlesManager.PointInt nextTitlePosition;
+            nextTitlePosition= TitlesManager.TitleBoard.getPosWithLessPossibleTitle();
+            
+            
+            if (nextTitlePosition == null) {
                 System.out.println("Collapsed - Complete");
                 return;
             }
 
-            List<TitlesManager.TitleBoard.TitleAndDirection> possibleTitles = TitlesManager.TitleBoard
-                    .getPossibleTitles(bestTitlePosition.x(), bestTitlePosition.y());
+            //System.out.println("DEBUG: Current tiles on board: " + TitlesManager.TitleBoard.getNumberOfTitles() + ", Stack size: " + stack.size());
+
+            List<TitlesManager.TitleBoard.TitleAndDirection> possibleTitles;
+            possibleTitles=TitlesManager.TitleBoard.getPossibleTitles(nextTitlePosition.x(), nextTitlePosition.y());
+
+            //System.out.println("DEBUG: possibleTitles size: " + possibleTitles.size());
 
             // No possible tiles, we should Backtrack,
             if (possibleTitles.isEmpty()) {
+                //System.out.println("DEBUG: No possible tiles - starting backtrack");
 
-                TitlesManager.PointInt impossiblePos = TitlesManager.TitleBoard.findImpossiblePositionNear(bestTitlePosition.x(), bestTitlePosition.y());
-                if (impossiblePos != null) {
+                List<TitlesManager.PointInt> impossiblePosList=TitlesManager.TitleBoard.getEmptyTitles(nextTitlePosition.x(), nextTitlePosition.y());
+
+                for (TitlesManager.PointInt impossiblePos:impossiblePosList) {          
                     boolean shouldClearArea = false;
                     if (lastImpossiblePosMap.containsKey(impossiblePos)) {
                         int stuckCounter = lastImpossiblePosMap.get(impossiblePos);
@@ -333,6 +344,7 @@ public class WaveFunction extends Application {
                     }
 
                     if (shouldClearArea) {
+                        //System.out.println("DEBUG: Clearing 4x4 area around " + impossiblePos);
                         // Clear 4x4 area around the problem
                         for (int dy = -2; dy <= 2; dy++) {
                             for (int dx = -2; dx <= 2; dx++) {
@@ -350,6 +362,7 @@ public class WaveFunction extends Application {
                         // first, find an impossible position near the problematic cell and removes
                         // random cell to break the deadlock
                         TitlesManager.PointInt pointToRemove = TitlesManager.TitleBoard.getRandomTileToRemove(impossiblePos.x(), impossiblePos.y());
+                        //System.out.println("DEBUG: Removing tile at " + pointToRemove);
                         TitlesManager.TitleBoard.delTitleAtPos(pointToRemove.x(), pointToRemove.y());
                         Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.DEL_Title, pointToRemove.x(), pointToRemove.y()));
                     }
@@ -357,25 +370,34 @@ public class WaveFunction extends Application {
 
                 while (!stack.isEmpty()) {
                     CollapseState state = stack.pollLast(); // pop
+                    //System.out.println("DEBUG: Backtracking, stack size: " + stack.size());
+                    //System.out.println("DEBUG: State has " + (state.possibleTitles.size() - state.actualIndex) + " options left");
 
                     if (state.hasPlacedTile()) {
+                        //System.out.println("DEBUG: Backtrack - removing tile at (" + state.placedX + "," + state.placedY + ")");
                         TitlesManager.TitleBoard.delTitleAtPos(state.placedX, state.placedY);
                         Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.DEL_Title, state.placedX, state.placedY));
                     }
                     TitlesManager.TitleBoard.TitleAndDirection nextOption = state.getNextTitle();
                     if (nextOption != null) {
                         TitlesManager.PointInt nextTitlePos = nextOption.getPositionFromDirection(state.bestTitlePosition);
+                        //System.out.println("DEBUG: Found next option, pushing back to stack");
+                        //System.out.println("DEBUG: Backtrack - trying next option: tile " + nextOption.getTitle() + " at " + nextTitlePos);
                         TitlesManager.TitleBoard.setTitleAtPos(nextTitlePos.x(), nextTitlePos.y(), nextOption.getTitle());
                         Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, nextTitlePos.x(), nextTitlePos.y()));
                         state.setPlacedPosition(nextTitlePos.x(), nextTitlePos.y());
                         stack.addLast(state); // push to the end
 
+
                         break;
+                    } else {
+                        //System.out.println("DEBUG: No more options in this state, continuing backtrack");
                     }
                 }
 
                 if (stack.isEmpty()) {
-                    System.out.println("Failed - No solution");
+                    //System.out.println("DEBUG: Stack is empty after backtrack - Failed - No solution");
+                    //System.out.println("DEBUG: Final tiles on board: " + TitlesManager.TitleBoard.getNumberOfTitles());
                     return;
                 }
 
@@ -385,18 +407,19 @@ public class WaveFunction extends Application {
             } else { // Normal Case, we have possible tiles
 
                 // New State
-                CollapseState newState = new CollapseState(bestTitlePosition, possibleTitles);
+                CollapseState newState = new CollapseState(nextTitlePosition, possibleTitles);
                 TitlesManager.TitleBoard.TitleAndDirection firstOption = newState.getNextTitle();
 
                 assert firstOption != null;
-                TitlesManager.PointInt firstTitlePos = firstOption.getPositionFromDirection(bestTitlePosition);
+                TitlesManager.PointInt firstTitlePos = firstOption.getPositionFromDirection(nextTitlePosition);
+                //System.out.println("DEBUG: Placing tile " + firstOption.getTitle() + " at " + firstTitlePos);
                 TitlesManager.TitleBoard.setTitleAtPos(firstTitlePos.x(), firstTitlePos.y(), firstOption.getTitle());
-                Renderer.actionQueue.add(new Renderer.Action(
-                        Renderer.Action.Operations.ADD_Title, firstTitlePos.x(), firstTitlePos.y()));
+                Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, firstTitlePos.x(), firstTitlePos.y()));
                 newState.setPlacedPosition(firstTitlePos.x(), firstTitlePos.y());
 
                 // Limit stack size
                 if (stack.size() >= MAX_STACK_SIZE) {
+                    //System.out.println("DEBUG: Stack size limit reached, removing oldest state");
                     stack.pollFirst(); // remove from the beginning
                 }
                 stack.addLast(newState); // push to the end
@@ -428,6 +451,7 @@ public class WaveFunction extends Application {
         System.out.println("Restarting...");
 
         TitlesManager.loadTitles(actualSet);
+        //System.out.println("DEBUG: Loaded " + TitlesManager.getTitlesCount() + " tiles");
         int titleSize = (actualSet.getSize());
         TitlesManager.TitleBoard.initializeBoard(canvasWidth / (titleSize * pixel_size),
                 canvasHeight / (titleSize * pixel_size));
@@ -454,22 +478,24 @@ public class WaveFunction extends Application {
 
         renderer.restart();
 
-        /* if  TitleSet.SetType.FROMSAMPLENOTDERIVED we start with the botton with titles with isBoottonTile=true
+        /* if TitleSet.SetType.FROMSAMPLENOTDERIVED we start with the bottom with tiles with isBottomTile=true
             otherwise random
          */
 
          
-        if(actualSet.getSetType() == TitlesManager.TitleSet.SetType.FROMSAMPLENOTDERIVED){
-            //we put all the button fo the patter with tittles with isBoottonTile=true
+        if(actualSet.getSetType() == TitlesManager.TitleSet.SetType.FROMSAMPLEOVERLAPWS){
+            //we put all the bottom for the pattern with tiles with isBottomTile=true
             int j=TitlesManager.TitleBoard.getBoardHeight()-1;
             int i=0;
-            int TitleIndex = TitlesManager.TitleBoard.getRandomTitleIndexWithIsBoottonTrue();
+            int TitleIndex = TitlesManager.TitleBoard.getRandomTitleIndexWithIsBottomTrue();
+            //System.out.println("DEBUG: Placing initial bottom tile " + TitleIndex + " (\" + TitlesManager.getTitleInfo(TitleIndex) + \") at (\" + i + \",\" + j + \")\");
             TitlesManager.TitleBoard.setTitleAtPos(i, j, TitleIndex);
             Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, i, j));
         }
         else {
             PointInt middle = TitlesManager.TitleBoard.getMiddlePoint();
             int TitleIndex = TitlesManager.TitleBoard.getRandomTitleIndex();
+            //System.out.println("DEBUG: Placing initial tile " + TitleIndex + " (\" + TitlesManager.getTitleInfo(TitleIndex) + \") at \" + middle);
             TitlesManager.TitleBoard.setTitleAtPos(middle.x(), middle.y(), TitleIndex);
             Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, middle.x(), middle.y()));
         }

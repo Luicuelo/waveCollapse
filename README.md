@@ -58,7 +58,7 @@ Tiles can only be placed adjacent to each other if their connection zones match.
 
 ## Code Structure
 
-- `CircuitTittles.java`: Manages tile definitions, loading, and board operations
+- `TitlesManager.java`: Manages tile definitions, loading, and board operations
 - `Renderer.java`: Handles the visualization and rendering of tiles
 - `WaveFunction.java`: Main application class that implements the WFC algorithm
 
