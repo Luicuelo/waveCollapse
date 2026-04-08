@@ -2,7 +2,6 @@ package principal;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
-import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
@@ -13,627 +12,251 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
-import principal.TitlesManager.PointInt;
 
-import java.util.ArrayDeque;
-import java.util.HashMap;
-import java.util.List;
+import java.util.Random;
 
 /**
- * Wave Function Collapse Visualization Application
- * <p>
- * A JavaFX application that visualizes the Wave Function Collapse algorithm in
- * real-time.
- * Features:
- * - Interactive tile visualization on a grid-based canvas
- * - Step-by-step execution control (restart, iterate, stop, step)
- * - Configurable canvas size via command line arguments
- * - Real-time animation of tile placement operations
- * </p>
+ * Wave Function Collapse visualization.
+ *
+ * <p>A JavaFX application that grows a board of tiles in real time, starting
+ * from a single tile and adding compatible neighbours until the board is full
+ * or no solution is found. The window offers three controls: restart the
+ * generation, stop it, and change the tile set or the zoom level.</p>
+ *
+ * <p>Accepted command line arguments:</p>
+ *
+ * <pre>
+ * --width=800    width of the canvas in pixels
+ * --height=800   height of the canvas in pixels
+ * --set=circuit  tile set to start with, by folder name (see {@link TileSet})
+ * --seed=42      seed of the generation; the same seed draws the same pattern
+ * </pre>
+ *
+ * <p>Without {@code --seed} a new random seed is used on every restart and
+ * printed to the console, so any pattern can be reproduced later.</p>
  */
 public class WaveFunction extends Application {
 
-    /**
-     * The default width of the canvas in pixels
-     */
+    /** Canvas width used when {@code --width} is not given. */
     private static final int DEFAULT_WIDTH = 800;
-    /**
-     * The default height of the canvas in pixels
-     */
+    /** Canvas height used when {@code --height} is not given. */
     private static final int DEFAULT_HEIGHT = 800;
-    /**
-     * The height of the control buttons in pixels
-     */
+    /** Zoom used when the user has not chosen another one. */
+    private static final int DEFAULT_PIXEL_SIZE = 4;
+    /** Height of the controls bar, in pixels. */
     private static final int BUTTON_HEIGHT = 25;
-    /**
-     * The background color for the canvas
-     */
+    /** Colour of the empty area of the canvas. */
     private static final Color BACKGROUND_COLOR = Color.LIGHTGRAY;
-    /**
-     * Number of frames to skip between updates for performance
-     */
-    private static final int FRAME_SKIP = 1; // Update every FRAME_SKIP frames for performance
-    /**
-     * The size multiplier for each pixel in the visualization
-     */
-    protected static int pixel_size = 4;
-    /**
-     * The actual width of the canvas in pixels
-     */
-    private int canvasWidth;
-    /**
-     * The actual height of the canvas in pixels
-     */
-    private int canvasHeight;
-    /**
-     * The canvas for drawing the visualization
-     */
+    /** Zoom levels offered to the user. */
+    private static final Integer[] PIXEL_SIZES = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    private int canvasWidth = DEFAULT_WIDTH;
+    private int canvasHeight = DEFAULT_HEIGHT;
+    private int pixelSize = DEFAULT_PIXEL_SIZE;
+    private Long pinnedSeed;
+    private TileSet activeSet = TileSet.CIRCUIT;
+
     private Canvas canvas;
-    /**
-     * The renderer responsible for drawing the visualization
-     */
     private Renderer renderer;
-    /**
-     * The animation timer for updating the visualization
-     */
+    private WfcSolver solver;
     private AnimationTimer animationTimer;
-    /**
-     * Flag indicating if the animation has finished
-     */
-    private boolean finished = false;
-    /**
-     * Frame counter for controlling animation speed
-     */
-    private double frameCounter = 0;
-    /**
-     * Flag indicating if the collapse algorithm is currently running
-     */
-    private volatile boolean collapseRunning = false;
-    /**
-     * Flag to signal the collapse algorithm to stop
-     */
-    private volatile boolean shouldStopCollapse = false;
-    /**
-     * Thread for running the collapse algorithm
-     */
-    private Thread collapseThread = null;
-    /**
-     * The current tile set being used
-     */
-    private TitlesManager.TitleSet actualSet = TitlesManager.TitleSet.CIRCUIT;
+    private boolean finished;
 
     /**
-     * Main method to launch the JavaFX application.
+     * Launches the application.
      *
-     * @param args command line arguments
+     * @param args command line arguments, see the class documentation
      */
     public static void main(String[] args) {
         launch(args);
     }
 
-    /**
-     * Starts the JavaFX application and initializes the user interface.
-     * Creates the main window with canvas for visualization and control buttons.
-     *
-     * @param primaryStage the primary stage for this application
-     */
     @Override
     public void start(Stage primaryStage) {
-
-        // Parse command line arguments for size
-        Parameters params = getParameters();
-        parseSize(params);
+        parseArguments(getParameters());
 
         primaryStage.setTitle("Wave Function Collapse");
-
-        // Create and initialize
         initialize();
 
-        // Setup mouse listeners
-        // setupMouseListeners();
-
-        // Create the restart button
-        Button restartButton = new Button("Restart");
-        restartButton.setOnAction(e -> restart());
-        restartButton.setPrefHeight(BUTTON_HEIGHT);
-
-        // Create the Stop button to pause animation
-        Button stopButton = new Button("Stop");
-        stopButton.setOnAction(e -> stopIteration());
-        stopButton.setPrefHeight(BUTTON_HEIGHT);
-
-        // Create the Set selector dropdown
-        ComboBox<TitlesManager.TitleSet> setSelector = new ComboBox<>();
-        setSelector.getItems().addAll(TitlesManager.TitleSet.values());
-        setSelector.setValue(TitlesManager.TitleSet.CIRCUIT);
-        setSelector.setPrefHeight(BUTTON_HEIGHT);
-        // Add a listener to update the actualSet field when selection changes
-        setSelector.setOnAction(e -> {
-            stopIteration();
-            actualSet = setSelector.getValue();
-            TitlesManager.loadTitles(actualSet);
-            restart();
-        });
-
-        Integer[] pixelSizes = {1, 2, 3, 4, 5, 6, 7, 8};
-        ComboBox<Integer> pixelSizeSelector = new ComboBox<>();
-        pixelSizeSelector.getItems().addAll(pixelSizes);
-        pixelSizeSelector.setValue(4);
-        pixelSizeSelector.setPrefHeight(BUTTON_HEIGHT);
-        // Add a listener to update the pixel_size field when selection changes
-        pixelSizeSelector.setOnAction(e -> {
-            stopIteration();
-            pixel_size = pixelSizeSelector.getValue();
-            renderer.PIXEL_SIZE = pixel_size;
-            restart();
-        });
-
-        // Layout
         BorderPane root = new BorderPane();
         root.setCenter(canvas);
+        root.setBottom(buildControls());
 
-        HBox buttons = new HBox();
-        root.setBottom(buttons);
-        buttons.setPadding(new Insets(0, 10, 0, 0));
-        buttons.setSpacing(10);
-        buttons.getChildren().addAll(restartButton, stopButton, setSelector, pixelSizeSelector);
-
-        // Create scene and show
         Scene scene = new Scene(root, canvasWidth, canvasHeight + BUTTON_HEIGHT);
         primaryStage.setScene(scene);
         primaryStage.setResizable(false);
         primaryStage.show();
-        renderer.iterate();
 
+        // Without this the window would show an empty canvas until the user
+        // pressed "Restart".
+        restart();
     }
 
-    /**
-     * Tests tile placement by arranging all available tiles on the board.
-     * This method is used for visualization and testing purposes.
-     */
-    private void testTitles() {
-        int x = 0;
-        int y = 0;
-        String lastname = "";
-
-        for (int a = 0; a < TitlesManager.getTitlesCount(); a++) {
-            String name = TitlesManager.getTitleName(a);
-
-            if (x >= TitlesManager.TitleBoard.getBoardWidth() || (x > 0 && !name.equals(lastname))) {
-                x = 0;
-                y++;
-                System.out.println("-----------------------------------------");
-                if (y >= TitlesManager.TitleBoard.getBoardHeight())
-                    break; // Prevent overflow
-            }
-
-            System.out.println(TitlesManager.getTitleInfo(a));
-            lastname = name;
-            TitlesManager.TitleBoard.setTitleAtPos(x, y, a);
-            x++;
-        }
-        Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.DRAW_TitleS, 0, 0));
-    }
-
-    /**
-     * Parses command line arguments for canvas size.
-     *
-     * @param params the parameters to parse
-     */
-    private void parseSize(Parameters params) {
-        try {
-            if (params.getNamed().containsKey("width")) {
-                canvasWidth = Integer.parseInt(params.getNamed().get("width"));
-            } else {
-                canvasWidth = DEFAULT_WIDTH;
-            }
-
-            if (params.getNamed().containsKey("height")) {
-                canvasHeight = Integer.parseInt(params.getNamed().get("height"));
-            } else {
-                canvasHeight = DEFAULT_HEIGHT;
-            }
-        } catch (NumberFormatException e) {
-            System.err.println("Invalid size parameters, using defaults");
-            canvasWidth = DEFAULT_WIDTH;
-            canvasHeight = DEFAULT_HEIGHT;
-        }
-    }
-
-    /**
-     * Initializes the canvas and starts the animation loop.
-     * Sets up the graphics context, creates the renderer, and begins the animation
-     * timer for real-time visualization updates.
-     */
-    private void initialize() {
-        canvas = new Canvas(canvasWidth, canvasHeight);
-
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-
-        gc.clearRect(0, 0, canvasWidth, canvasHeight);
-        gc.setFill(BACKGROUND_COLOR);
-        gc.fillRect(0, 0, canvasWidth, canvasHeight);
-
-        finished = false;
-
-        renderer = new Renderer(gc, canvasWidth, canvasHeight, pixel_size, BACKGROUND_COLOR);
-        animationTimer = new AnimationTimer() {
-            @Override
-            public void handle(long now) {
-                if (!finished && renderer != null) {
-                    frameCounter++;
-                    if (frameCounter >= Double.MAX_VALUE)
-                        frameCounter = 0;
-                    if (frameCounter % FRAME_SKIP == 0) {
-                        try {
-                            renderer.updateFrame();
-                        } catch (Exception e) {
-                            System.err.println("Error updating : " + e.getMessage());
-                            stopAnimation();
-                        }
-                    }
-                }
-            }
-        };
-
-        renderer.iterate();
-        animationTimer.start();
-    }
-
-    /**
-     * Begins the Wave Function Collapse algorithm.
-     * <p>
-     * This method implements the core of the Wave Function Collapse algorithm with
-     * the following key steps:
-     * 1. Find the position with the least possible tile options (lowest entropy)
-     * 2. Get all possible tiles that can be placed at that position
-     * 3. If there are no possible tiles:
-     * - Find an impossible position near the problematic cell
-     * - Remove a random adjacent tile to break the deadlock
-     * - Backtrack using a limited-size stack of previous states
-     * 4. If there are possible tiles:
-     * - Create a new state with the possible tiles
-     * - Place the first possible tile
-     * - Add the state to the stack for potential backtracking
-     * 5. Continue until the board is complete or no solution is found
-     * </p>
-     */
-    private void beginCollapse() {
-        ArrayDeque<CollapseState> stack = new ArrayDeque<>();
-        final int MAX_STACK_SIZE = 300;
-
-        HashMap<TitlesManager.PointInt, Integer> lastImpossiblePosMap = new HashMap<>();
-
-        //System.out.println("DEBUG: Starting beginCollapse with " + TitlesManager.TitleBoard.getNumberOfTitles() + " tiles on board");
-
-        while (!shouldStopCollapse) {
-
-            TitlesManager.PointInt nextTitlePosition;
-            nextTitlePosition= TitlesManager.TitleBoard.getPosWithLessPossibleTitle();
-            
-            
-            if (nextTitlePosition == null) {
-                System.out.println("Collapsed - Complete");
-                return;
-            }
-
-            //System.out.println("DEBUG: Current tiles on board: " + TitlesManager.TitleBoard.getNumberOfTitles() + ", Stack size: " + stack.size());
-
-            List<TitlesManager.TitleBoard.TitleAndDirection> possibleTitles;
-            possibleTitles=TitlesManager.TitleBoard.getPossibleTitles(nextTitlePosition.x(), nextTitlePosition.y());
-
-            //System.out.println("DEBUG: possibleTitles size: " + possibleTitles.size());
-
-            // No possible tiles, we should Backtrack,
-            if (possibleTitles.isEmpty()) {
-                //System.out.println("DEBUG: No possible tiles - starting backtrack");
-
-                List<TitlesManager.PointInt> impossiblePosList=TitlesManager.TitleBoard.getEmptyTitles(nextTitlePosition.x(), nextTitlePosition.y());
-
-                for (TitlesManager.PointInt impossiblePos:impossiblePosList) {          
-                    boolean shouldClearArea = false;
-                    if (lastImpossiblePosMap.containsKey(impossiblePos)) {
-                        int stuckCounter = lastImpossiblePosMap.get(impossiblePos);
-                        stuckCounter++;
-                         if (stuckCounter >= 10) {
-                            shouldClearArea = true;
-                            lastImpossiblePosMap.put(impossiblePos, 0);
-                        }else  lastImpossiblePosMap.put(impossiblePos, stuckCounter);
-                    } else {
-                        lastImpossiblePosMap.put(impossiblePos, 1);
-                    }
-
-                    if (shouldClearArea) {
-                        //System.out.println("DEBUG: Clearing 4x4 area around " + impossiblePos);
-                        // Clear 4x4 area around the problem
-                        for (int dy = -2; dy <= 2; dy++) {
-                            for (int dx = -2; dx <= 2; dx++) {
-                                int clearX = impossiblePos.x() + dx;
-                                int clearY = impossiblePos.y() + dy;
-                                if (clearX >= 0 && clearX < TitlesManager.TitleBoard.getBoardWidth() &&
-                                        clearY >= 0 && clearY < TitlesManager.TitleBoard.getBoardHeight()) {
-                                    TitlesManager.TitleBoard.delTitleAtPos(clearX, clearY);
-                                    Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.DEL_Title, clearX, clearY));
-                                }
-                            }
-                        }
-                    } else {
-                        // Normal case: delete single tile
-                        // first, find an impossible position near the problematic cell and removes
-                        // random cell to break the deadlock
-                        TitlesManager.PointInt pointToRemove = TitlesManager.TitleBoard.getRandomTileToRemove(impossiblePos.x(), impossiblePos.y());
-                        //System.out.println("DEBUG: Removing tile at " + pointToRemove);
-                        TitlesManager.TitleBoard.delTitleAtPos(pointToRemove.x(), pointToRemove.y());
-                        Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.DEL_Title, pointToRemove.x(), pointToRemove.y()));
-                    }
-                }
-
-                while (!stack.isEmpty()) {
-                    CollapseState state = stack.pollLast(); // pop
-                    //System.out.println("DEBUG: Backtracking, stack size: " + stack.size());
-                    //System.out.println("DEBUG: State has " + (state.possibleTitles.size() - state.actualIndex) + " options left");
-
-                    if (state.hasPlacedTile()) {
-                        //System.out.println("DEBUG: Backtrack - removing tile at (" + state.placedX + "," + state.placedY + ")");
-                        TitlesManager.TitleBoard.delTitleAtPos(state.placedX, state.placedY);
-                        Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.DEL_Title, state.placedX, state.placedY));
-                    }
-                    TitlesManager.TitleBoard.TitleAndDirection nextOption = state.getNextTitle();
-                    if (nextOption != null) {
-                        TitlesManager.PointInt nextTitlePos = nextOption.getPositionFromDirection(state.bestTitlePosition);
-                        //System.out.println("DEBUG: Found next option, pushing back to stack");
-                        //System.out.println("DEBUG: Backtrack - trying next option: tile " + nextOption.getTitle() + " at " + nextTitlePos);
-                        TitlesManager.TitleBoard.setTitleAtPos(nextTitlePos.x(), nextTitlePos.y(), nextOption.getTitle());
-                        Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, nextTitlePos.x(), nextTitlePos.y()));
-                        state.setPlacedPosition(nextTitlePos.x(), nextTitlePos.y());
-                        stack.addLast(state); // push to the end
-
-
-                        break;
-                    } else {
-                        //System.out.println("DEBUG: No more options in this state, continuing backtrack");
-                    }
-                }
-
-                if (stack.isEmpty()) {
-                    //System.out.println("DEBUG: Stack is empty after backtrack - Failed - No solution");
-                    //System.out.println("DEBUG: Final tiles on board: " + TitlesManager.TitleBoard.getNumberOfTitles());
-                    return;
-                }
-
-                // After backtracking, restart the main loop to re-evaluate the best position
-                // with the updated board state
-
-            } else { // Normal Case, we have possible tiles
-
-                // New State
-                CollapseState newState = new CollapseState(nextTitlePosition, possibleTitles);
-                TitlesManager.TitleBoard.TitleAndDirection firstOption = newState.getNextTitle();
-
-                assert firstOption != null;
-                TitlesManager.PointInt firstTitlePos = firstOption.getPositionFromDirection(nextTitlePosition);
-                //System.out.println("DEBUG: Placing tile " + firstOption.getTitle() + " at " + firstTitlePos);
-                TitlesManager.TitleBoard.setTitleAtPos(firstTitlePos.x(), firstTitlePos.y(), firstOption.getTitle());
-                Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, firstTitlePos.x(), firstTitlePos.y()));
-                newState.setPlacedPosition(firstTitlePos.x(), firstTitlePos.y());
-
-                // Limit stack size
-                if (stack.size() >= MAX_STACK_SIZE) {
-                    //System.out.println("DEBUG: Stack size limit reached, removing oldest state");
-                    stack.pollFirst(); // remove from the beginning
-                }
-                stack.addLast(newState); // push to the end
-
-                // Check completeness
-                if (TitlesManager.TitleBoard.getNumberOfTitles() == TitlesManager.TitleBoard.getBoardWidth()
-                        * TitlesManager.TitleBoard.getBoardHeight()) {
-                    System.out.println("Collapsed - Board complete");
-                    return;
-                }
-            }
-            try {
-                Thread.sleep(2);
-            } catch (InterruptedException e) {
-                return;
-            }
-        }
-
-    }
-
-    /**
-     * Restarts the visualization with a new arrangement of tiles.
-     * Clears the current visualization and starts fresh.
-     */
-    private void restart() {
-        if (renderer == null)
-            return;
-
-        System.out.println("Restarting...");
-
-        TitlesManager.loadTitles(actualSet);
-        //System.out.println("DEBUG: Loaded " + TitlesManager.getTitlesCount() + " tiles");
-        int titleSize = (actualSet.getSize());
-        TitlesManager.TitleBoard.initializeBoard(canvasWidth / (titleSize * pixel_size),
-                canvasHeight / (titleSize * pixel_size));
-
-        shouldStopCollapse = true;
-
-        while (collapseRunning) {
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                break;
-            }
-        }
-
-        TitlesManager.TitleBoard.initializeBoard(
-                TitlesManager.TitleBoard.getBoardWidth(),
-                TitlesManager.TitleBoard.getBoardHeight());
-
-        // Clear canvas
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-        gc.clearRect(0, 0, canvasWidth, canvasHeight);
-        gc.setFill(BACKGROUND_COLOR);
-        gc.fillRect(0, 0, canvasWidth, canvasHeight);
-
-        renderer.restart();
-
-        /* if TitleSet.SetType.FROMSAMPLENOTDERIVED we start with the bottom with tiles with isBottomTile=true
-            otherwise random
-         */
-
-         
-        if(actualSet.getSetType() == TitlesManager.TitleSet.SetType.FROMSAMPLEOVERLAPWS){
-            //we put all the bottom for the pattern with tiles with isBottomTile=true
-            int j=TitlesManager.TitleBoard.getBoardHeight()-1;
-            int i=0;
-            int TitleIndex = TitlesManager.TitleBoard.getRandomTitleIndexWithIsBottomTrue();
-            //System.out.println("DEBUG: Placing initial bottom tile " + TitleIndex + " (\" + TitlesManager.getTitleInfo(TitleIndex) + \") at (\" + i + \",\" + j + \")\");
-            TitlesManager.TitleBoard.setTitleAtPos(i, j, TitleIndex);
-            Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, i, j));
-        }
-        else {
-            PointInt middle = TitlesManager.TitleBoard.getMiddlePoint();
-            int TitleIndex = TitlesManager.TitleBoard.getRandomTitleIndex();
-            //System.out.println("DEBUG: Placing initial tile " + TitleIndex + " (\" + TitlesManager.getTitleInfo(TitleIndex) + \") at \" + middle);
-            TitlesManager.TitleBoard.setTitleAtPos(middle.x(), middle.y(), TitleIndex);
-            Renderer.actionQueue.add(new Renderer.Action(Renderer.Action.Operations.ADD_Title, middle.x(), middle.y()));
-        }
-        
-
-        //testTitles();
-
-        shouldStopCollapse = false;
-
-        
-        collapseThread = new Thread(() -> {
-            try {
-                Thread.sleep(100);
-                collapseRunning = true;
-                beginCollapse();
-                collapseRunning = false;
-            } catch (InterruptedException e) {
-                collapseRunning = false;
-            }
-        });
-        collapseThread.setDaemon(true);
-        collapseThread.start();
-        
-
-        renderer.iterate();
-    }
-
-    /**
-     * Stops the continuous iteration mode of the visualization.
-     */
-    private void stopIteration() {
-        System.out.println("stop ...");
-        shouldStopCollapse = true;
-
-        while (collapseRunning) {
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                break;
-            }
-        }
-
-        if (collapseThread != null) {
-            collapseThread.interrupt();
-        }
-        if (renderer != null) {
-            renderer.stopIteration();
-        }
-
-    }
-
-    /**
-     * Stops the animation timer and cleans up resources.
-     */
-    private void stopAnimation() {
+    @Override
+    public void stop() {
         finished = true;
         if (animationTimer != null) {
             animationTimer.stop();
         }
+        if (solver != null) {
+            solver.shutdown();
+        }
+        System.out.println("Application closed");
+    }
+
+    private void initialize() {
+        canvas = new Canvas(canvasWidth, canvasHeight);
+        GraphicsContext gc = canvas.getGraphicsContext2D();
+
+        renderer = new Renderer(gc, BACKGROUND_COLOR);
+        renderer.setPixelSize(pixelSize);
+        renderer.clearCanvas();
+
+        solver = new WfcSolver();
+
+        animationTimer = new AnimationTimer() {
+            @Override
+            public void handle(long now) {
+                if (!finished) {
+                    renderer.updateFrame();
+                }
+            }
+        };
+        animationTimer.start();
+    }
+
+    private HBox buildControls() {
+        Button restartButton = new Button("Restart");
+        restartButton.setPrefHeight(BUTTON_HEIGHT);
+        restartButton.setOnAction(e -> restart());
+
+        Button stopButton = new Button("Stop");
+        stopButton.setPrefHeight(BUTTON_HEIGHT);
+        stopButton.setOnAction(e -> stopGeneration());
+
+        ComboBox<TileSet> setSelector = new ComboBox<>();
+        setSelector.getItems().addAll(TileSet.values());
+        setSelector.setValue(activeSet);
+        setSelector.setPrefHeight(BUTTON_HEIGHT);
+        setSelector.setOnAction(e -> {
+            TileSet selected = setSelector.getValue();
+            if (selected == null || selected == activeSet) {
+                return;
+            }
+            activeSet = selected;
+            restart();
+        });
+
+        ComboBox<Integer> pixelSizeSelector = new ComboBox<>();
+        pixelSizeSelector.getItems().addAll(PIXEL_SIZES);
+        pixelSizeSelector.setValue(pixelSize);
+        pixelSizeSelector.setPrefHeight(BUTTON_HEIGHT);
+        pixelSizeSelector.setOnAction(e -> {
+            Integer selected = pixelSizeSelector.getValue();
+            if (selected == null || selected == pixelSize) {
+                return;
+            }
+            pixelSize = selected;
+            restart();
+        });
+
+        HBox controls = new HBox();
+        controls.setPadding(new Insets(0, 10, 0, 0));
+        controls.setSpacing(10);
+        controls.getChildren().addAll(restartButton, stopButton, setSelector, pixelSizeSelector);
+        return controls;
     }
 
     /**
-     * Cleanup method called when the application is closing.
-     * Stops the animation timer and releases resources.
+     * Throws the current board away and starts a new generation.
+     *
+     * <p>Nothing in here blocks: the previous generation is asked to stop and
+     * the new one is queued behind it, so the user interface stays responsive
+     * even while a large board is being generated. Each generation gets a fresh
+     * board and a fresh drawing session, so a run that is still dying out can
+     * neither paint its tiles over the new board nor mix its progress with the
+     * new run. The tile set itself is shared: it is loaded once and never
+     * changes afterwards.</p>
      */
-    @Override
-    public void stop() {
-
-        stopIteration();
-        if (collapseThread != null) {
-            collapseThread.interrupt();
+    private void restart() {
+        if (renderer == null) {
+            return;
         }
-        stopAnimation();
-        renderer = null;
-        System.out.println("Application destroyed");
-        Platform.exit();
-        System.exit(0);
+
+        solver.stop();
+
+        long seed = pinnedSeed != null ? pinnedSeed : new Random().nextLong();
+        System.out.println("Restarting " + activeSet + " with seed " + seed);
+
+        int tileSize = activeSet.getTileSize();
+        int columns = Math.max(1, canvasWidth / (tileSize * pixelSize));
+        int rows = Math.max(1, canvasHeight / (tileSize * pixelSize));
+        TileBoard board = new TileBoard(activeSet, columns, rows);
+
+        renderer.setPixelSize(pixelSize);
+        renderer.clearCanvas();
+
+        solver.setSeed(seed);
+        solver.solve(board, renderer.newSession());
     }
 
     /**
-     * Represents the state of a collapse operation for backtracking purposes.
-     * Stores information about possible tile placements and the current state of
-     * the algorithm.
+     * Stops the generation in progress. The pending drawing actions are still
+     * painted, so the canvas ends up showing the last state of the board.
      */
-    private static class CollapseState {
-        /**
-         * The best position to place a tile
-         */
-        protected TitlesManager.PointInt bestTitlePosition;
-        /**
-         * List of possible tiles and their directions for placement
-         */
-        protected List<TitlesManager.TitleBoard.TitleAndDirection> possibleTitles;
-        private int actualIndex;
-        private int placedX = -1, placedY = -1;
+    private void stopGeneration() {
+        solver.stop();
+        System.out.println("Generation stopped");
+    }
 
-        /**
-         * Constructs a new CollapseState with the specified parameters
-         *
-         * @param bestTitlePosition the best position to place a tile
-         * @param possibleTitles    list of possible tiles and their directions
-         */
-        public CollapseState(TitlesManager.PointInt bestTitlePosition,
-                             List<TitlesManager.TitleBoard.TitleAndDirection> possibleTitles) {
-            this.bestTitlePosition = bestTitlePosition;
-            this.possibleTitles = possibleTitles;
-            this.actualIndex = 0;
+    private void parseArguments(Parameters params) {
+        canvasWidth = parsePositiveInt(params, "width", DEFAULT_WIDTH);
+        canvasHeight = parsePositiveInt(params, "height", DEFAULT_HEIGHT);
+
+        String rawSet = params.getNamed().get("set");
+        if (rawSet != null) {
+            TileSet selected = parseTileSet(rawSet);
+            if (selected != null) {
+                activeSet = selected;
+            } else {
+                System.err.println("Unknown tile set '" + rawSet + "', using " + activeSet);
+            }
         }
 
-        /**
-         * Gets the next tile from the list of possible tiles
-         *
-         * @return the next tile and its direction, or null if no more tiles
-         */
-        public TitlesManager.TitleBoard.TitleAndDirection getNextTitle() {
-            if (actualIndex >= possibleTitles.size())
-                return null;
-            return possibleTitles.get(actualIndex++);
+        String rawSeed = params.getNamed().get("seed");
+        if (rawSeed == null) {
+            return;
         }
+        try {
+            pinnedSeed = Long.parseLong(rawSeed);
+        } catch (NumberFormatException e) {
+            System.err.println("Invalid seed '" + rawSeed + "', a random seed will be used");
+        }
+    }
 
-        /**
-         * Sets the position where a tile was placed
-         *
-         * @param x the x-coordinate where the tile was placed
-         * @param y the y-coordinate where the tile was placed
-         */
-        public void setPlacedPosition(int x, int y) {
-            this.placedX = x;
-            this.placedY = y;
+    private static TileSet parseTileSet(String name) {
+        for (TileSet set : TileSet.values()) {
+            if (set.getFolderName().equalsIgnoreCase(name) || set.name().equalsIgnoreCase(name)) {
+                return set;
+            }
         }
+        return null;
+    }
 
-        /**
-         * Checks if a tile has been placed
-         *
-         * @return true if a tile has been placed, false otherwise
-         */
-        public boolean hasPlacedTile() {
-            return placedX != -1 && placedY != -1;
+    private static int parsePositiveInt(Parameters params, String name, int defaultValue) {
+        String raw = params.getNamed().get(name);
+        if (raw == null) {
+            return defaultValue;
         }
+        try {
+            int value = Integer.parseInt(raw);
+            if (value > 0) {
+                return value;
+            }
+            System.err.println("--" + name + " must be positive, using " + defaultValue);
+        } catch (NumberFormatException e) {
+            System.err.println("Invalid --" + name + " value '" + raw + "', using " + defaultValue);
+        }
+        return defaultValue;
     }
 }

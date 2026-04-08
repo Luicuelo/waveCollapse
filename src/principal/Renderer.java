@@ -3,365 +3,229 @@ package principal;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.Image;
 import javafx.scene.paint.Color;
-import principal.TitlesManager.TitleSet;
-import principal.TitlesManager.TitleSet.SetType;
 
-import java.util.LinkedList;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Renderer class for visualizing tiles in the Wave Function Collapse algorithm.
- *<p>
- * This class handles the graphical representation of tiles on a grid-based
- * canvas.
- * It supports animation through an action queue system that can draw tiles with
- * step-by-step or continuous visualization modes.
- * </p>
+ * Draws the board on a JavaFX canvas.
+ *
+ * <p>Drawing is decoupled from the generation: the solver reports every change
+ * to a listener given by this class, which stores the change in a queue and
+ * paints one action per frame. That is what makes the collapse visible step by
+ * step, but it also means the queue can run ahead of the canvas, so each action
+ * carries both the tile index and the tile set it belongs to instead of looking
+ * them up when the action is finally painted.</p>
+ *
+ * <p>The queue is a {@link ConcurrentLinkedQueue} because it is filled from the
+ * solver thread and drained from the JavaFX thread. Each generation draws
+ * through its own {@linkplain #newSession() session}: a generation that has
+ * been thrown away may still queue a few actions while it dies out, and the
+ * session token is what keeps them from being painted over the new board.</p>
  */
-class Renderer {
+final class Renderer {
+
+    /** A tile of an overlapping set is as wide as this many cells. */
+    private static final int OVERLAP_SCALE = 3;
 
     /**
-     * Queue of actions to be performed during animation
-*/
-    protected static final Queue<Action> actionQueue = new LinkedList<>();
-    /**
-     * JavaFX graphics context for drawing
+     * A pending drawing operation.
      */
+    private interface TileAction {
+
+        /**
+         * Gets the drawing session that produced this operation.
+         *
+         * @return the session token
+         */
+        long session();
+
+        /**
+         * Performs the operation on the canvas.
+         *
+         * @param renderer renderer holding the graphics context
+         */
+        void execute(Renderer renderer);
+    }
+
+    /**
+     * Paints a tile.
+     *
+     * @param session   drawing session of the generation that placed the tile
+     * @param x         column
+     * @param y         row
+     * @param tileIndex index of the tile in the set
+     * @param set       tile set the index belongs to
+     */
+    private record DrawTileAction(long session, int x, int y, int tileIndex, TileSet set)
+            implements TileAction {
+
+        @Override
+        public void execute(Renderer renderer) {
+            renderer.paintTile(set, tileIndex, x, y);
+        }
+    }
+
+    /**
+     * Clears the area covered by a tile.
+     *
+     * @param session   drawing session of the generation that removed the tile
+     * @param x         column
+     * @param y         row
+     * @param tileIndex index the removed tile had in the set
+     * @param set       tile set the index belongs to
+     */
+    private record EraseTileAction(long session, int x, int y, int tileIndex, TileSet set)
+            implements TileAction {
+
+        @Override
+        public void execute(Renderer renderer) {
+            renderer.eraseTile(set, tileIndex, x, y);
+        }
+    }
+
     private final GraphicsContext gc;
+    private final Color backgroundColor;
+    private final Queue<TileAction> pendingActions = new ConcurrentLinkedQueue<>();
+    private final AtomicLong session = new AtomicLong();
+    private int pixelSize;
 
     /**
-     * Background color for the canvas
+     * Creates a renderer.
+     *
+     * @param gc              graphics context of the canvas (must not be null)
+     * @param backgroundColor colour used to clear the canvas
+     * @throws IllegalArgumentException if the graphics context is null
      */
-    protected Color backGroundColor;
-    /**
-     * Size of each cell in pixels
-*/
-    protected int PIXEL_SIZE;
-    /**
-     * Flag indicating if continuous iteration is active
-     */
-    private boolean runningIteration = false;
-    /**
-     * Flag indicating if single step mode is active
-     */
-    private boolean runningStep = false;
-
-    /**
-     * Creates a new Renderer for tile visualization.
-*
-     * @param gc              the graphics context to draw on (must not be null)
-     * @param w               canvas width in pixels (must be positive)
-     * @param h               canvas height in pixels (must be positive)
-     * @param pPIXEL_SIZE     the size of each pixel inthe visualization
-     * @param backGroundColor color for the background
-     * @throws IllegalArgumentException if gc is null or dimensions are invalid
-     */
-    public Renderer(GraphicsContext gc, int w, int h, int pPIXEL_SIZE, Color backGroundColor) {
-        PIXEL_SIZE = pPIXEL_SIZE;
-if (gc == null) {
+    Renderer(GraphicsContext gc, Color backgroundColor) {
+        if (gc == null) {
             throw new IllegalArgumentException("GraphicsContext cannot be null");
         }
-        if (w <= 0 || h <= 0) {
-            throw new IllegalArgumentException("Width and height must be positive");
-        }
-
-        this.backGroundColor = backGroundColor;
         this.gc = gc;
-
-}
+        this.backgroundColor = backgroundColor;
+    }
 
     /**
-     * Updates the frame by processing one iteration if running.
-     * This method is called by the animation timer.
+     * Sets the zoom of the drawing, in screen pixels per tile pixel.
+     *
+     * @param pixelSize size of a tile pixel on screen
      */
-    public void updateFrame() {
-        if (!runningIteration && !runningStep)
+    void setPixelSize(int pixelSize) {
+        this.pixelSize = pixelSize;
+    }
+
+    /**
+     * Opens the drawing session of a new generation.
+     *
+     * <p>Every pending action is dropped and the session token is advanced, so
+     * the operations a previous generation still queues while it dies out are
+     * discarded instead of being painted over the new board.</p>
+     *
+     * @return the listener the new generation has to report to
+     */
+    WfcSolver.BoardListener newSession() {
+        long token = session.incrementAndGet();
+        pendingActions.clear();
+        return new Session(token);
+    }
+
+    /**
+     * Paints the whole canvas with the background colour.
+     */
+    void clearCanvas() {
+        double width = gc.getCanvas().getWidth();
+        double height = gc.getCanvas().getHeight();
+        gc.clearRect(0, 0, width, height);
+        gc.setFill(backgroundColor);
+        gc.fillRect(0, 0, width, height);
+    }
+
+    /**
+     * Executes the next pending action, if any. Called once per frame by the
+     * animation timer.
+     */
+    void updateFrame() {
+        TileAction action;
+        while ((action = pendingActions.poll()) != null) {
+            if (action.session() != session.get()) {
+                // Left over by a generation that was thrown away before it
+                // could be painted: the board on screen no longer holds it.
+                continue;
+            }
+            action.execute(this);
             return;
-        iteration();
-        runningStep = false;
-    }
-
-    /**
-     * Processesone iteration of the animation queue.
-     * Executes the current action and removes it when complete.
-     */
-    public void iteration() {
-        if (actionQueue.isEmpty()) {
-            return;
-        }
-        Action action = actionQueue.peek();
-        // Add null check to prevent NullPointerException
-        if (action == null) {
-return;
-        }
-        boolean finished;
-        switch (action.getInstruction()) {
-            case DRAW_TitleS:
-                finished = drawTitles(action);
-                break;
-            case ADD_Title:
-                finished = drawTitle(action);
-                break;
-            case DEL_Title:
-                finished = delTitle(action);
-                break;
-
-            default:
-                // Remove unknown actions from the queue
-                actionQueue.poll();
-                return;
-        }
-        if (finished) {
-            actionQueue.poll();
         }
     }
 
     /**
-     * Draws tiles according to the specified action.
-     *
-     * @param action the action containing tile drawing information
-     * @returntrue if the drawing is complete, false otherwise
+     * Paints a tile, scaled so each of its pixels becomes a
+     * {@link #pixelSize} square on screen.
      */
-    private boolean drawTitles(Action action) {
-        int tileNumber = action.getTotalStages() - action.getStage() + 1;
-        // System.out.println("Drawing tile " + tileNumber + " of " +
-        // action.getTotalStages());
-       TitlesManager.PointInt pos = TitlesManager.TitleBoard.getTitlePosByNumber(tileNumber);
-        if (pos != null) {
-            int tileIndex = TitlesManager.TitleBoard.getTitleIndex(pos.x(), pos.y());
-            // System.out.println("Position: (" + pos.getX() + "," + pos.getY() + "),
-            //tileIndex: " + tileIndex);            
-            drawTile(tileIndex, pos.x(), pos.y(),TitlesManager.getTitleSize(tileIndex),false);
-        } else {
-            // System.out.println("Position is null for tile number " + tileNumber);
-        }
-        return action.endStage();
-    }
-
-    /**
-     *Draws a single tile according to the specified action.
-     *
-     * @param action the action containing tile drawing information
-     * @return true if the drawing is complete, false otherwise
-     */
-    private boolean drawTitle(Action action) {
-        int tileIndex = TitlesManager.TitleBoard.getTitleIndex(action.x, action.y);
-        if (tileIndex==-1) return action.endStage(); 
-        boolean overlap= false;
-        TitlesManager.Title title=TitlesManager.getTitle(tileIndex);
-        if(title!=null) overlap=(title.getSet().getSetType().hasOverload());
-        drawTile(tileIndex, action.x, action.y,TitlesManager.getTitleSize(tileIndex),overlap);
-        return action.endStage();
-    }
-
-    /**
-     * Removes a tile according to the specified action.
-     *
-     * @param action the action containing tile removal information
-     * @return true if the removal is complete, false otherwise
-     */
-    private boolean delTitle(Action action) {
-        int tileIndex = TitlesManager.TitleBoard.getTitleIndex(action.x, action.y); 
-        if (tileIndex==-1) return action.endStage(); 
-        boolean overlap= false;
-        TitlesManager.Title title=TitlesManager.getTitle(tileIndex);
-        if(title!=null) overlap=(title.getSet().getSetType().hasOverload());
-        delTile(action.x, action.y,TitlesManager.getTitleSize(tileIndex),overlap);
-        return action.endStage();
-    }
-
-    /**
-     * Restarts the visualization by stopping any ongoing animation and clearing the
-     * action queue.
-     * Resets the animation state to allow for a fresh start.
-     */
-    public void restart() {
-        actionQueue.clear();
-        runningIteration = false;
-    }
-
-    /**
-     * Activates continuous iteration mode.
-     * When active, the visualization will continuously process animation actions.
-     */
-    public void iterate() {
-        runningIteration = true;
-    }
-
-    /**
-     * Stops the continuous iteration mode.
-    * When stopped, the visualization will pause and wait for manual control.
-     */
-    public void stopIteration() {
-        runningIteration = false;
-    }
-
-    /**
-     * Draws a tile at the specified position
-     *
-     * @param i the index of the tile to draw
-     * @param x the xposition to draw the tile
-     * @param y the y position to draw the tile
-     * @param size the size of the tile
-     */
-    public void drawTile(int i, int x, int y,int size,boolean overlap) {
-        // Get the tile from CircuitTitles
-        TitlesManager.Title tile = TitlesManager.getTitle(i);
+    private void paintTile(TileSet set, int tileIndex, int x, int y) {
+        Tile tile = set.get(tileIndex);
         if (tile == null) {
             return;
         }
-
-        // Get the tile image
-        Image tileImage = tile.image;
-        if (tileImage == null) {
+        Image image = tile.getImage();
+        if (image == null) {
             return;
         }
 
-        // Calculate screen position
-        int screenX = x * PIXEL_SIZE *(overlap?3:size);
-        int screenY = y * PIXEL_SIZE * (overlap?3:size);
+        boolean overlap = set.usesOverlap();
+        int cell = cellPixels(set, overlap);
+        double screenX = (double) x * cell;
+        double screenY = (double) y * cell;
+        // Overlapping patterns are drawn OVERLAP_SCALE times bigger so that they
+        // cover the neighbouring cells they share pixels with.
+        double zoom = (double) pixelSize * (overlap ? OVERLAP_SCALE : 1);
 
-        // Draw the tile image scaled so each pixel becomes a PIXEL_SIZE square
-        // If the image is 14x14 and PIXEL_SIZE is 4, the drawn size should be 56x56
-        // (14*4 x 14*4)
-        
-        // pixel-perfect
         gc.setImageSmoothing(false);
-        double drawnWidth = tileImage.getWidth() * PIXEL_SIZE* (overlap?3:1);
-        double drawnHeight = tileImage.getHeight() * PIXEL_SIZE*(overlap?3:1);
-        gc.drawImage(tileImage, screenX, screenY, drawnWidth, drawnHeight);
+        gc.drawImage(image, screenX, screenY, image.getWidth() * zoom, image.getHeight() * zoom);
     }
 
     /**
-     * Removes a tile from the specified position by clearing the area with the
-     * background color.
-     *
-     * @param x the x position of the tile to remove* @param y the y position of the tile to remove
-     * @param size the size of the tile
+     * Clears the area covered by a tile with the background colour.
      */
-    public void delTile(int x, int y,int size,boolean overlap) {
-        // Calculate screen position and size
-        int screenX = x * PIXEL_SIZE * (overlap?3:size);
-        int screenY = y * PIXEL_SIZE * (overlap?3:size);
-        int tileSize = (overlap?3:size) * PIXEL_SIZE;
-
-        // Clear the area by filling it with the background color
-        gc.setFill(backGroundColor);
-        gc.fillRect(screenX, screenY, tileSize,tileSize);
+    private void eraseTile(TileSet set, int tileIndex, int x, int y) {
+        if (set.get(tileIndex) == null) {
+            return;
+        }
+        int cell = cellPixels(set, set.usesOverlap());
+        gc.setFill(backgroundColor);
+        gc.fillRect((double) x * cell, (double) y * cell, cell, cell);
     }
 
     /**
-     * Represents an action in the animation queue.
-     * <p>
-     * Actions define operations to be performed during the visualization,
-     * such as drawing tiles. Each action can have multiple stages for animation
-     * purposes.
-     * </p>
+     * Gets how many screen pixels a cell occupies. For overlapping sets a tile
+     * is as big as its pattern, so the cell is one pattern pixel.
      */
-    protected static class Action{
-
-        /**
-         * X coordinate for the action
-         */
-        private final int x;
-        /**
-         * Y coordinate for the action
-         */
-        private final int y;
-        /**
-         * The type of operation
-         */
-        private final Operations instruction;
-        /**
-         * Total number of stages for this action*/
-        private final int totalStages;
-        /**
-         * Current animation stage counter
-         */
-        private int stage;
-
-        /**
-         * Creates a new action for the animation queue.
-         *
-         * @param instruction the type of operation (DRAW_TitleS)
-         * @param x           first parameter (unused for DRAW_TitleS)
-         * @param y           second parameter (unused for DRAW_TitleS)
-         */
-        public Action(Operations instruction, int x, int y) {
-            this.instruction = instruction;
-            this.x = x;
-            this.y = y;
-            this.totalStages = getInstructionStageNumber();
-            this.stage = totalStages;
-        }
-
-        /**
-         * Gets the number of animation stages for this instruction type.
-         *
-         * @return number of stages based on the number of tiles on the board
-         */
-        private int getInstructionStageNumber() {
-            return switch (instruction) {
-               case DRAW_TitleS -> TitlesManager.TitleBoard.getNumberOfTitles();
-                case ADD_Title, DEL_Title -> 1;
-            };
-        }
-
-        /**
-         * Gets the instruction type.
-         *
-         * @return the instruction type
-         */
-        public Operations getInstruction() {
-            return instruction;
-        }
-
-        /**
-        * Advances the animation by one stage.
-         *
-         * @return true if the animation is complete, false if more stages remain
-         */
-        public boolean endStage() {
-            stage--;
-            return stage <= 0;
-        }
-
-        /**
-         * Gets the current stage number.
-         *
-         * @return thecurrent stage number
-         */
-        public int getStage() {
-            return stage;
-        }
-
-        /**
-         * Gets the total number of stages.
-         *
-         * @return the total number of stages
-         */
-        public int getTotalStages() {
-            return totalStages;
-        }
-
-        /**
-         * Enumrepresenting the different types of operations that can be performed.
-         */
-        public enum Operations {
-            /**
-             * Operation to draw tiles on the board
-             */
-            DRAW_TitleS,
-            /**
-             * Operation to add a tile to the board
-             */
-            ADD_Title,
-            /**
-             * Operation to remove a tilefrom the board
-             */
-            DEL_Title
-        }
-
+    private int cellPixels(TileSet set, boolean overlap) {
+        int scale = overlap ? OVERLAP_SCALE : set.getTileSize();
+        return pixelSize * scale;
     }
 
+    /**
+     * Listener of one drawing session. It only accepts the operations of the
+     * generation it was created for; it is deliberately lightweight, because a
+     * new one is created on every restart.
+     */
+    private final class Session implements WfcSolver.BoardListener {
+
+        private final long token;
+
+        private Session(long token) {
+            this.token = token;
+        }
+
+        @Override
+        public void tilePlaced(int x, int y, int tileIndex, TileSet set) {
+            pendingActions.add(new DrawTileAction(token, x, y, tileIndex, set));
+        }
+
+        @Override
+        public void tileRemoved(int x, int y, int tileIndex, TileSet set) {
+            pendingActions.add(new EraseTileAction(token, x, y, tileIndex, set));
+        }
+    }
 }

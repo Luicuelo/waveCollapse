@@ -1,74 +1,250 @@
-# Wave Function Collapse Algorithm Visualization
+# Wave Function Collapse
 
-This project is a JavaFX implementation of the Wave Function Collapse (WFC) algorithm for procedural pattern generation. It visualizes how the algorithm works by placing circuit tiles according to their connection constraints.
+A JavaFX visualization of the Wave Function Collapse algorithm: a board is built
+one tile at a time, always choosing the tile that keeps its neighbours
+consistent, and backing out of dead ends until the whole board is filled.
 
-## Overview
-
-The Wave Function Collapse algorithm is a constraint-based procedural generation technique that creates patterns by gradually reducing possibilities until a valid solution is found. This implementation focuses on circuit tile generation, where each tile has specific connection points that must match adjacent tiles.
-
-![Floor Plan Example](/png/sampleFloorPlan.png)
+![Floor plan example](png/sampleFloorPlan.png)
 
 ## Features
 
-- Interactive visualization of the WFC algorithm
-- Real-time animation of tile placement
-- Support for multiple tile types with different connection patterns
-- Derived tile generation through rotation and mirroring
-- Step-by-step execution control (restart, stop, step)
-- Configurable canvas size
-
-## How It Works
-
-1. **Initialization**: The algorithm starts with a grid where each cell can potentially be any tile type.
-2. **Constraint Propagation**: When a tile is placed, it constrains the possible tiles in adjacent cells.
-3. **Tile Selection**: The algorithm selects the cell with the fewest possibilities (lowest entropy) to collapse next.
-4. **Backtracking**: If a contradiction is reached (no valid tiles for a cell), the algorithm backtracks and tries different options.
-
-## Tile System
-
-Each tile has four sides (top, right, bottom, left) with three connection zones each. The zones are represented by colors:
-- **G** - Green
-- **B** - Blue
-- **W** - White
-- **D** - Dark
-
-Tiles can only be placed adjacent to each other if their connection zones match.
-
-## Controls
-
-- **Restart**: Clears the board and starts a new generation
-- **Stop**: Halts the current generation process
+- Real time animation of the generation (one drawing operation per frame)
+- Several tile sets: hand made ones, and ones sampled from a bitmap
+- Rotated and mirrored variants generated automatically from each base tile
+- Backtracking with a bounded history, plus area clearing when a region gets
+  permanently stuck
+- Reproducible patterns thanks to a configurable seed
+- Configurable canvas size, tile set and zoom, from the user interface or the
+  command line
 
 ## Requirements
 
-- Java 8 or higher
-- JavaFX support
+| Requirement | Version |
+|---|---|
+| JDK | 17 or newer |
+| JavaFX SDK | 21 (or any 17+ release) |
 
-## Building and Running
+JavaFX is not part of the JDK, so it has to be downloaded separately (for
+example from <https://gluonhq.com/products/javafx/>) and added as a module. The
+examples below assume the SDK is unpacked at:
 
-1. Compile the Java files:
-   ```
-   javac -d bin src/principal/*.java
-   ```
+- Windows: `C:\Program Files\Java\javafx-sdk-21.0.8`
+- Linux: `/opt/javafx-sdk-21.0.8`
 
-2. Run the application:
-   ```
-   java -cp bin principal.WaveFunction
-   ```
+Only the `javafx.controls` module is needed; it pulls in `javafx.graphics` and
+`javafx.base`.
 
-## Code Structure
+## Project layout
 
-- `TitlesManager.java`: Manages tile definitions, loading, and board operations
-- `Renderer.java`: Handles the visualization and rendering of tiles
-- `WaveFunction.java`: Main application class that implements the WFC algorithm
-
-## Customization
-
-You can customize the canvas size by passing command-line arguments:
 ```
-java -cp bin principal.WaveFunction --width=1024 --height=768
+src/principal/
+  WaveFunction.java   JavaFX application: window, controls, command line
+  WfcSolver.java      generation loop and backtracking (runs on its own thread)
+  TileBoard.java      the grid: placement, compatibility rules, entropy scan
+  TileSet.java        the available tile sets: where their tiles come from, and
+                      the loaded tiles themselves
+  Tile.java           one tile: the eight border zones and its graphic
+  TileImageOps.java   pixel procedures used to derive variants (mirror, rotate,
+                      copy a region of a sample)
+  Renderer.java       draws the board, one queued operation per frame
+
+resources/            tile images and sample images (must be on the classpath)
+png/                  screenshots used by this document
 ```
+
+## Compiling and running
+
+The tile images are loaded with `getResource("/<set>/<tile>.png")`, so the
+compiled classes (`out`) **and** the `resources` folder have to be on the
+classpath. Use `;` as separator on Windows and `:` on Linux.
+
+### Windows (cmd.exe)
+
+```bat
+set JFX_LIB=C:\Program Files\Java\javafx-sdk-21.0.8\lib
+
+javac -d out --module-path "%JFX_LIB%" --add-modules javafx.controls src\principal\*.java
+
+java --module-path "%JFX_LIB%" --add-modules javafx.controls -cp "out;resources" principal.WaveFunction
+```
+
+### Windows (PowerShell)
+
+```powershell
+$jfx = "C:\Program Files\Java\javafx-sdk-21.0.8\lib"
+
+javac -d out --module-path $jfx --add-modules javafx.controls src\principal\*.java
+
+java --module-path $jfx --add-modules javafx.controls -cp "out;resources" principal.WaveFunction
+```
+
+### Linux / macOS
+
+```bash
+export JFX_LIB=/opt/javafx-sdk-21.0.8/lib
+
+javac -d out --module-path "$JFX_LIB" --add-modules javafx.controls src/principal/*.java
+
+java --module-path "$JFX_LIB" --add-modules javafx.controls -cp "out:resources" principal.WaveFunction
+```
+
+### Launcher script (Windows)
+
+`run.bat` does the same thing with the paths already filled in. It compiles the
+sources every time and forwards any argument to the application, so:
+
+```bat
+run.bat --width=1200 --height=800 --set=castle --seed=42
+```
+
+If your JavaFX SDK lives somewhere else, override the folder before calling it:
+
+```bat
+set JFX_HOME=D:\tools\javafx-sdk-21
+run.bat
+```
+
+The launcher compiles into `out/` and picks its JDK from `JDK_HOME`, then from a
+known JDK 17 installation, then from `JAVA_HOME`. If your `javac -version`
+reports `1.8` and the build fails, point `JDK_HOME` to your JDK 17+ installation:
+
+```bat
+set JDK_HOME=C:\Program Files\Java\jdk-17.0.20.1
+run.bat
+```
+
+### API documentation
+
+The sources are documented with Javadoc. To build the HTML docs:
+
+```bat
+javadoc -private -d docs --module-path "%JFX_LIB%" --add-modules javafx.controls -sourcepath src -subpackages principal
+```
+
+`-Xdoclint:all,-missing` can be added to check the tags without complaining about
+undocumented private fields.
+
+## Command line options
+
+| Option | Default | Description |
+|---|---|---|
+| `--width=<px>` | `800` | canvas width |
+| `--height=<px>` | `800` | canvas height |
+| `--set=<name>` | `circuit` | tile set to start with, by folder name |
+| `--seed=<long>` | random | seed of the generation |
+
+The board is sized from the canvas: `width / (tileSize * zoom)` columns. A
+larger zoom therefore means a smaller board.
+
+Without `--seed`, every *Restart* picks a new random seed and prints it to the
+console, so any pattern you like can be reproduced later with
+`--seed=<that number>`. With `--seed`, *Restart* always rebuilds the same board.
+
+## Controls
+
+| Control | Effect |
+|---|---|
+| **Restart** | throws the board away and starts a new generation |
+| **Stop** | stops the generation; the pending drawing operations still finish, so the canvas shows the last state |
+| **Tile set** | loads another set and restarts |
+| **Zoom** | changes the size of a tile pixel and restarts |
+
+## Tile sets
+
+| Set | Loading | Notes |
+|---|---|---|
+| `circuit`, `castle`, `knots`, `simple`, `floorPlan`, `rooms`, `circles` | hand written | each tile is declared inside `TileSet` with an 8 character border description |
+| `NotKnot`, `Link`, `Knot`, `Maze`, `ColoredCity`, `City`, `Skyline`, `Water` | sampled | every 3x3 window of the sample becomes a tile |
+| `Flowers`, `SimpleWall`, `Paths` | sampled, overlapping | neighbouring patterns share one pixel, so the middle row and column are compared too; `Flowers` also starts from the bottom row of the sample |
+
+A set knows both where its graphics live and which tiles it is made of, so the
+list above is the whole content of `TileSet`. The tiles are read the first time
+one of its accessors is called and never change afterwards, and the mirrors and
+rotations of every base tile are derived immediately after.
+
+The only thing that differs between the two groups is where the base tiles come
+from, so that is the only part that is polymorphic: each constant of the enum is
+given a loading strategy that carries the name of the set, the size of its tiles
+and its base tiles. There are two of them, `HandWritten` (definitions written
+inline, graphics loaded from `resources/<folder>/`) and `Sampled`
+(`resources/sample/<name>.png` cut into windows, with the overlap and
+from-bottom variants). The strategy fills the list it is given and nothing else,
+so it never needs to reach back into the enum, and `Tile` does not point back at
+its set either: what is shared (loading, derivation, the palette of a sample and
+the accessors) lives in `TileSet` once.
+
+## How a tile is described
+
+A tile is defined by eight colour zones read clockwise around its border,
+starting at the top-left corner:
+```
+    0 1 2        0 = top-left      4 = bottom-right
+    7   3        1 = top-center    5 = bottom-center
+    6 5 4        2 = top-right     6 = bottom-left
+                 3 = right-center  7 = left-center
+```
+
+Corners are shared by the two sides they belong to, so eight zones describe the
+whole border. Two tiles may touch only when the zones of the touching sides are
+identical. For sampled sets the zones are letters assigned to the colours of the
+sample (`A`, `B`, `C`...), and the tile is identified by that description, which
+is what keeps a sample with thousands of windows down to a few dozen tiles.
+
+Rotations and mirrors are generated from every base tile, both the description
+and the image, until no new border shows up.
+
+## How the generation works
+
+1. Seed the board with one random tile (or a bottom tile, for sets that need it).
+2. Find the placed tile with the fewest legal continuations around it. Ties are
+   broken at random.
+3. Collect the tiles that can be placed in its empty neighbours, respecting the
+   border zones, and place one of them.
+4. If no tile fits anywhere around it, break the deadlock: clear one neighbour,
+   and if the same cell keeps failing, clear a 9x9 area around it.
+5. Undo the most recent decisions until one of them has an option left, and try
+   that option instead.
+6. Stop when the board is full, when the remembered history is exhausted, or
+   when the user asks to stop.
+
+This is a greedy tile placer with backtracking rather than the canonical Wave
+Function Collapse: there is no per-cell domain of possible tiles and no
+constraint propagation, which is why a cell can only be found impossible once
+its neighbours are already painted.
+
+## Notes on concurrency
+
+- The generation runs on a single daemon thread owned by `WfcSolver`; the JavaFX
+  thread only draws, so the window never freezes.
+- Starting a new generation never blocks the user interface: a run id is
+  incremented, the running generation sees the change on its next step and dies,
+  and the new one is queued behind it. Two generations can never write to a
+  board at the same time, and nothing is left half started if the previous run
+  threw an exception.
+- A `TileSet` is loaded once, in whichever thread asks for it first, and the
+  resulting list of tiles is immutable. Every generation can therefore read the
+  same set: there is nothing to copy and nothing to invalidate.
+- Every generation owns its own `TileBoard`. The board is only touched by the
+  generation thread, and a run that is still finishing writes to its own, older
+  board, never to the one the user is already looking at.
+- Changes reach the drawing side as immutable actions that carry the tile index
+  and the tile set already resolved, in a `ConcurrentLinkedQueue`. Every
+  generation draws through its own session, and the renderer discards any action
+  whose session is no longer the current one, so an abandoned run cannot paint
+  over the new board.
+
+## Known limitations
+
+- The entropy scan recomputes every candidate for the whole board on each step,
+  so the cost grows with the square of the number of cells. Large boards (or a
+  small zoom) are noticeably slower.
+- The first time a set is used its tiles are loaded, and for the sampled sets
+  that means cutting out and decoding every window of the sample image; the very
+  first generation of such a set may take a moment to start. Later generations
+  reuse the same set.
+- A long generation can queue more drawing operations than the canvas can paint
+  at 60 per second, so the animation may lag behind the real state of the board.
 
 ## License
 
-This project is open source and available under the MIT License.
+This project is open tilesSource and available under the MIT License.
