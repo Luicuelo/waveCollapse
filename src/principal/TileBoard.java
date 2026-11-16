@@ -18,6 +18,12 @@ import java.util.Random;
  *   <li>where it is best to keep growing ({@link #getLowestEntropyAnchor(Random)}).</li>
  * </ul>
  *
+ * <p>Answering them by brute force would test every tile of the set against
+ * every cell, over and over. Instead the board caches the domain of each cell,
+ * the tiles that can still go in it: a change drops the domains of the cell and
+ * of its four orthogonal neighbours, which are the only ones whose surroundings
+ * changed, and they are rebuilt the next time they are read.</p>
+ *
  * <p>The board is not thread safe by design: it belongs to exactly one
  * {@link WfcSolver} run, which is what keeps the whole generation free of
  * races. A board is never reused either: a new generation builds a new board,
@@ -30,6 +36,12 @@ final class TileBoard {
 
     /** Value stored in a cell that has no tile yet. */
     static final int EMPTY = -1;
+
+    /**
+     * Domain of a cell where no tile fits. It is shared, so dead cells cost no
+     * allocation at all.
+     */
+    private static final int[] NO_TILES = new int[0];
 
     /**
      * A cell of the board.
@@ -58,6 +70,23 @@ final class TileBoard {
     private final int width;
     private final int height;
     private final int[][] cells;
+
+    /**
+     * Domain of every cell: the tiles that can be placed in it, or {@code null}
+     * while the domain is unknown or the cell already holds a tile. It is
+     * dropped whenever the cell or one of its four orthogonal neighbours
+     * changes, and rebuilt the next time the domain is read.
+     */
+    private final int[][][] candidates;
+
+    /**
+     * Buffer the domains are built in, so that rejecting a tile allocates
+     * nothing. It is created on first use: its size is the number of tiles, and
+     * asking for it here would load the set on the thread that builds the
+     * board.
+     */
+    private int[] scratch;
+
     private int placedCount;
 
     /**
@@ -80,6 +109,7 @@ final class TileBoard {
         for (int[] column : cells) {
             Arrays.fill(column, EMPTY);
         }
+        this.candidates = new int[width][height][];
     }
 
     /**
@@ -122,13 +152,13 @@ final class TileBoard {
     }
 
     /**
-     * Tells whether a position belongs to the board.
+     * Tells whether a position lies inside the board.
      *
      * @param x column
      * @param y row
      * @return {@code true} if the position is inside the board
      */
-    boolean contains(int x, int y) {
+    boolean inBounds(int x, int y) {
         return x >= 0 && x < width && y >= 0 && y < height;
     }
 
@@ -140,7 +170,7 @@ final class TileBoard {
      * @return {@code true} if the position is inside the board and empty
      */
     boolean isEmpty(int x, int y) {
-        return contains(x, y) && cells[x][y] == EMPTY;
+        return inBounds(x, y) && cells[x][y] == EMPTY;
     }
 
     /**
@@ -174,7 +204,7 @@ final class TileBoard {
      *                                  silently
      */
     void place(int x, int y, int tileIndex) {
-        if (!contains(x, y)) {
+        if (!inBounds(x, y)) {
             throw new IllegalArgumentException("Position " + x + "," + y + " is outside the board");
         }
         if (set.get(tileIndex) == null) {
@@ -184,7 +214,7 @@ final class TileBoard {
             throw new IllegalStateException(
                     "Cell " + x + "," + y + " already holds tile " + cells[x][y]);
         }
-        cells[x][y] = tileIndex;
+        writeCell(x, y, tileIndex);
         placedCount++;
     }
 
@@ -196,9 +226,35 @@ final class TileBoard {
      * @param y row
      */
     void clear(int x, int y) {
-        if (contains(x, y) && cells[x][y] != EMPTY) {
-            cells[x][y] = EMPTY;
+        if (inBounds(x, y) && cells[x][y] != EMPTY) {
+            writeCell(x, y, EMPTY);
             placedCount--;
+        }
+    }
+
+    /**
+     * Writes a cell and drops the domains the change makes obsolete.
+     *
+     * <p>It is the only place where the cells are written, which is what keeps
+     * the cached domains honest: the domain of a cell depends on the tiles
+     * placed in its four orthogonal neighbours, so those neighbours are the
+     * only domains a change can invalidate. The cell itself loses its own
+     * domain as well: while it holds a tile there is nothing to place in it, and
+     * once it is cleared again its domain is likely out of date.</p>
+     *
+     * @param x         column
+     * @param y         row
+     * @param tileIndex tile index to store, or {@link #EMPTY} to clear the cell
+     */
+    private void writeCell(int x, int y, int tileIndex) {
+        cells[x][y] = tileIndex;
+        candidates[x][y] = null;
+        for (Direction direction : Direction.ALL) {
+            int neighborX = x + direction.dx();
+            int neighborY = y + direction.dy();
+            if (inBounds(neighborX, neighborY)) {
+                candidates[neighborX][neighborY] = null;
+            }
         }
     }
 
@@ -219,18 +275,13 @@ final class TileBoard {
      * @return the empty neighbours, at most four
      */
     List<Point> getEmptyNeighbors(int x, int y) {
-        List<Point> neighbors = new ArrayList<>(4);
-        if (y > 0 && cells[x][y - 1] == EMPTY) {
-            neighbors.add(new Point(x, y - 1));
-        }
-        if (y < height - 1 && cells[x][y + 1] == EMPTY) {
-            neighbors.add(new Point(x, y + 1));
-        }
-        if (x > 0 && cells[x - 1][y] == EMPTY) {
-            neighbors.add(new Point(x - 1, y));
-        }
-        if (x < width - 1 && cells[x + 1][y] == EMPTY) {
-            neighbors.add(new Point(x + 1, y));
+        List<Point> neighbors = new ArrayList<>(Direction.ALL.length);
+        for (Direction direction : Direction.ALL) {
+            int neighborX = x + direction.dx();
+            int neighborY = y + direction.dy();
+            if (inBounds(neighborX, neighborY) && cells[neighborX][neighborY] == EMPTY) {
+                neighbors.add(new Point(neighborX, neighborY));
+            }
         }
         return neighbors;
     }
@@ -243,18 +294,13 @@ final class TileBoard {
      * @return the occupied neighbours, at most four
      */
     List<Point> getOccupiedNeighbors(int x, int y) {
-        List<Point> neighbors = new ArrayList<>(4);
-        if (y > 0 && cells[x][y - 1] != EMPTY) {
-            neighbors.add(new Point(x, y - 1));
-        }
-        if (y < height - 1 && cells[x][y + 1] != EMPTY) {
-            neighbors.add(new Point(x, y + 1));
-        }
-        if (x > 0 && cells[x - 1][y] != EMPTY) {
-            neighbors.add(new Point(x - 1, y));
-        }
-        if (x < width - 1 && cells[x + 1][y] != EMPTY) {
-            neighbors.add(new Point(x + 1, y));
+        List<Point> neighbors = new ArrayList<>(Direction.ALL.length);
+        for (Direction direction : Direction.ALL) {
+            int neighborX = x + direction.dx();
+            int neighborY = y + direction.dy();
+            if (inBounds(neighborX, neighborY) && cells[neighborX][neighborY] != EMPTY) {
+                neighbors.add(new Point(neighborX, neighborY));
+            }
         }
         return neighbors;
     }
@@ -278,12 +324,22 @@ final class TileBoard {
      * Counts how many placements are possible around a tile. Used to measure the
      * entropy of a cell without building the whole list.
      *
+     * <p>It only reads the cached domains of the empty neighbours, so no tile is
+     * ever tested and no placement is ever created.</p>
+     *
      * @param x column of the tile used as anchor
      * @param y row of the tile used as anchor
      * @return the number of possible placements
      */
     int countPossiblePlacements(int x, int y) {
-        return collectPlacements(x, y).size();
+        if (!inBounds(x, y) || cells[x][y] == EMPTY) {
+            return 0;
+        }
+        int count = 0;
+        for (Direction direction : Direction.ALL) {
+            count += domainAt(x + direction.dx(), y + direction.dy()).length;
+        }
+        return count;
     }
 
     /**
@@ -324,32 +380,80 @@ final class TileBoard {
     }
 
     private boolean hasEmptyNeighbor(int x, int y) {
-        return (y > 0 && cells[x][y - 1] == EMPTY)
-                || (y < height - 1 && cells[x][y + 1] == EMPTY)
-                || (x > 0 && cells[x - 1][y] == EMPTY)
-                || (x < width - 1 && cells[x + 1][y] == EMPTY);
+        for (Direction direction : Direction.ALL) {
+            int neighborX = x + direction.dx();
+            int neighborY = y + direction.dy();
+            if (inBounds(neighborX, neighborY) && cells[neighborX][neighborY] == EMPTY) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<Placement> collectPlacements(int x, int y) {
-        List<Placement> placements = new ArrayList<>();
-        if (!contains(x, y) || cells[x][y] == EMPTY) {
-            return placements;
+        if (!inBounds(x, y) || cells[x][y] == EMPTY) {
+            return new ArrayList<>();
         }
 
-        List<Point> targets = getEmptyNeighbors(x, y);
-        if (targets.isEmpty()) {
-            return placements;
-        }
-
-        boolean overlap = set.usesOverlap();
-        for (Point target : targets) {
-            for (int tileIndex = 0; tileIndex < set.size(); tileIndex++) {
-                if (isCompatibleWithNeighbors(target.x(), target.y(), tileIndex, overlap)) {
-                    placements.add(new Placement(tileIndex, target.x(), target.y()));
-                }
+        // The domains already know how many placements there will be, so the
+        // list is created with its final size and never grows.
+        List<Placement> placements = new ArrayList<>(countPossiblePlacements(x, y));
+        for (Direction direction : Direction.ALL) {
+            int targetX = x + direction.dx();
+            int targetY = y + direction.dy();
+            for (int tileIndex : domainAt(targetX, targetY)) {
+                placements.add(new Placement(tileIndex, targetX, targetY));
             }
         }
         return placements;
+    }
+
+    /**
+     * Gets the tiles that can go into a cell, computing them the first time they
+     * are asked for.
+     *
+     * <p>A domain is a function of the tiles placed around the cell and of
+     * nothing else, so throwing it away is always safe: it is rebuilt from the
+     * board when it is needed again, with exactly the value it would have had if
+     * it had been kept up to date.</p>
+     *
+     * @param x column
+     * @param y row
+     * @return the domain of the cell, or nothing when it is outside the board or
+     *         already holds a tile
+     */
+    private int[] domainAt(int x, int y) {
+        if (!inBounds(x, y) || cells[x][y] != EMPTY) {
+            return NO_TILES;
+        }
+        int[] domain = candidates[x][y];
+        if (domain == null) {
+            domain = computeDomain(x, y);
+            candidates[x][y] = domain;
+        }
+        return domain;
+    }
+
+    /**
+     * Builds the domain of an empty cell by testing every tile against the tiles
+     * already placed around it.
+     *
+     * @param x column
+     * @param y row
+     * @return the tiles that fit in the cell, in index order
+     */
+    private int[] computeDomain(int x, int y) {
+        if (scratch == null) {
+            scratch = new int[set.size()];
+        }
+        boolean overlap = set.usesOverlap();
+        int compatible = 0;
+        for (int tileIndex = 0; tileIndex < scratch.length; tileIndex++) {
+            if (isCompatibleWithNeighbors(x, y, tileIndex, overlap)) {
+                scratch[compatible++] = tileIndex;
+            }
+        }
+        return compatible == 0 ? NO_TILES : Arrays.copyOf(scratch, compatible);
     }
 
     /**
@@ -368,32 +472,17 @@ final class TileBoard {
         if (tile == null) {
             return false;
         }
-
-        Tile above = tileAt(x, y - 1);
-        if (above != null && !matchesAbove(tile, above, overlap)) {
-            return false;
+        for (Direction direction : Direction.ALL) {
+            Tile neighbor = tileAt(x + direction.dx(), y + direction.dy());
+            if (neighbor != null && !matches(tile, neighbor, direction, overlap)) {
+                return false;
+            }
         }
-
-        Tile below = tileAt(x, y + 1);
-        if (below != null && !matchesBelow(tile, below, overlap)) {
-            return false;
-        }
-
-        Tile onLeft = tileAt(x - 1, y);
-        if (onLeft != null && !matchesLeft(tile, onLeft, overlap)) {
-            return false;
-        }
-
-        Tile onRight = tileAt(x + 1, y);
-        if (onRight != null && !matchesRight(tile, onRight, overlap)) {
-            return false;
-        }
-
         return true;
     }
 
     private Tile tileAt(int x, int y) {
-        if (!contains(x, y)) {
+        if (!inBounds(x, y)) {
             return null;
         }
         int tileIndex = cells[x][y];
@@ -407,47 +496,153 @@ final class TileBoard {
         return tile.forbidsSameNeighbor() && neighbor.getName().equals(tile.getName());
     }
 
-    private static boolean matchesAbove(Tile tile, Tile above, boolean overlap) {
-        if (sameNameConflict(tile, above)) {
+    /**
+     * Checks whether a tile and the neighbour it touches agree along the seam.
+     *
+     * <p>The direction carries which side of the tile faces the neighbour and
+     * which side of the neighbour faces back, so a single comparison covers the
+     * four cases. When the set overlaps its patterns, the two tiles also share
+     * the row or column that runs through the middle of the seam, so the middle
+     * of each tile is compared with the far side of the other one.</p>
+     *
+     * @param tile      tile being tested
+     * @param neighbor  tile already placed next to it
+     * @param direction where the neighbour is
+     * @param overlap   whether the set compares the middle row and column too
+     * @return {@code true} if the two tiles can touch
+     */
+    private static boolean matches(Tile tile, Tile neighbor, Direction direction, boolean overlap) {
+        if (sameNameConflict(tile, neighbor)) {
             return false;
         }
+        Side own = direction.ownSide();
+        Side other = direction.neighborSide();
         if (!overlap) {
-            return Arrays.equals(tile.getTop(), above.getBottom());
+            return Arrays.equals(own.zonesOf(tile), other.zonesOf(neighbor));
         }
-        return Arrays.equals(tile.getHorizontalMid(), above.getBottom())
-                && Arrays.equals(tile.getTop(), above.getHorizontalMid());
+        return Arrays.equals(own.midOf(tile), other.zonesOf(neighbor))
+                && Arrays.equals(own.zonesOf(tile), other.midOf(neighbor));
     }
 
-    private static boolean matchesBelow(Tile tile, Tile below, boolean overlap) {
-        if (sameNameConflict(tile, below)) {
-            return false;
+    /**
+     * A direction towards a neighbour, together with the side of the tile that
+     * faces it and the side of the neighbour that faces back.
+     *
+     * <p>The constants are declared in the order the neighbours are examined. That
+     * order decides which placement is tried first and which tiles are cleared
+     * first, so it is part of what makes a seed reproduce the same board.</p>
+     */
+    private enum Direction {
+
+        /** The neighbour is above: the top side of the tile meets its bottom. */
+        UP(0, -1, Side.TOP, Side.BOTTOM),
+
+        /** The neighbour is below: the bottom side of the tile meets its top. */
+        DOWN(0, 1, Side.BOTTOM, Side.TOP),
+
+        /** The neighbour is on the left: the left side meets its right. */
+        LEFT(-1, 0, Side.LEFT, Side.RIGHT),
+
+        /** The neighbour is on the right: the right side meets its left. */
+        RIGHT(1, 0, Side.RIGHT, Side.LEFT);
+
+        /**
+         * The four directions, ready to iterate. It is kept because
+         * {@code values()} returns a fresh array on every call.
+         */
+        private static final Direction[] ALL = values();
+
+        private final int dx;
+        private final int dy;
+        private final Side ownSide;
+        private final Side neighborSide;
+
+        Direction(int dx, int dy, Side ownSide, Side neighborSide) {
+            this.dx = dx;
+            this.dy = dy;
+            this.ownSide = ownSide;
+            this.neighborSide = neighborSide;
         }
-        if (!overlap) {
-            return Arrays.equals(tile.getBottom(), below.getTop());
+
+        /**
+         * Gets how many columns to move to reach the neighbour.
+         *
+         * @return the column step
+         */
+        private int dx() {
+            return dx;
         }
-        return Arrays.equals(tile.getHorizontalMid(), below.getTop())
-                && Arrays.equals(tile.getBottom(), below.getHorizontalMid());
+
+        /**
+         * Gets how many rows to move to reach the neighbour.
+         *
+         * @return the row step
+         */
+        private int dy() {
+            return dy;
+        }
+
+        /**
+         * Gets the side of the tile that faces the neighbour.
+         *
+         * @return the own side
+         */
+        private Side ownSide() {
+            return ownSide;
+        }
+
+        /**
+         * Gets the side of the neighbour that faces back.
+         *
+         * @return the side of the neighbour
+         */
+        private Side neighborSide() {
+            return neighborSide;
+        }
     }
 
-    private static boolean matchesLeft(Tile tile, Tile onLeft, boolean overlap) {
-        if (sameNameConflict(tile, onLeft)) {
-            return false;
-        }
-        if (!overlap) {
-            return Arrays.equals(tile.getLeft(), onLeft.getRight());
-        }
-        return Arrays.equals(tile.getVerticalMid(), onLeft.getRight())
-                && Arrays.equals(tile.getLeft(), onLeft.getVerticalMid());
-    }
+    /**
+     * One of the four sides of a tile, with the middle row or column that runs
+     * along it. The middle zones only matter for sets whose patterns overlap.
+     */
+    private enum Side {
 
-    private static boolean matchesRight(Tile tile, Tile onRight, boolean overlap) {
-        if (sameNameConflict(tile, onRight)) {
-            return false;
+        /** Top side, read from left to right. */
+        TOP,
+        /** Right side, read from top to bottom. */
+        RIGHT,
+        /** Bottom side, read from left to right. */
+        BOTTOM,
+        /** Left side, read from top to bottom. */
+        LEFT;
+
+        /**
+         * Gets the three zones of this side.
+         *
+         * @param tile tile to read
+         * @return the zones, in the order the side is read
+         */
+        private char[] zonesOf(Tile tile) {
+            return switch (this) {
+                case TOP -> tile.getTop();
+                case RIGHT -> tile.getRight();
+                case BOTTOM -> tile.getBottom();
+                case LEFT -> tile.getLeft();
+            };
         }
-        if (!overlap) {
-            return Arrays.equals(tile.getRight(), onRight.getLeft());
+
+        /**
+         * Gets the middle row or column this side takes part in: the middle row
+         * for the horizontal sides and the middle column for the vertical ones.
+         *
+         * @param tile tile to read
+         * @return the zones of that row or column
+         */
+        private char[] midOf(Tile tile) {
+            return switch (this) {
+                case TOP, BOTTOM -> tile.getHorizontalMid();
+                case RIGHT, LEFT -> tile.getVerticalMid();
+            };
         }
-        return Arrays.equals(tile.getVerticalMid(), onRight.getLeft())
-                && Arrays.equals(tile.getRight(), onRight.getVerticalMid());
     }
 }

@@ -325,7 +325,7 @@ final class WfcSolver {
     }
 
     private void clearTile(TileBoard board, int x, int y) {
-        if (!board.contains(x, y)) {
+        if (!board.inBounds(x, y)) {
             return;
         }
         int tileIndex = board.getTileIndex(x, y);
