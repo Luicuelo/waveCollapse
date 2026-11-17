@@ -254,4 +254,36 @@ final class Tile {
     char[] getVerticalMid() {
         return verticalMid;
     }
+
+    /** Sides of a tile and their rows or columns used to check compatibility. */
+    enum Side {
+        TOP, RIGHT, BOTTOM, LEFT;
+
+        static final Side[] ALL = values();
+
+        Side opposite() {
+            return switch (this) {
+                case TOP -> BOTTOM;
+                case RIGHT -> LEFT;
+                case BOTTOM -> TOP;
+                case LEFT -> RIGHT;
+            };
+        }
+
+        char[] zonesOf(Tile tile) {
+            return switch (this) {
+                case TOP -> tile.getTop();
+                case RIGHT -> tile.getRight();
+                case BOTTOM -> tile.getBottom();
+                case LEFT -> tile.getLeft();
+            };
+        }
+
+        char[] midOf(Tile tile) {
+            return switch (this) {
+                case TOP, BOTTOM -> tile.getHorizontalMid();
+                case RIGHT, LEFT -> tile.getVerticalMid();
+            };
+        }
+    }
 }

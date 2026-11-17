@@ -1,5 +1,7 @@
 package principal;
 
+import principal.Tile.Side;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -86,6 +88,11 @@ final class TileBoard {
      * board.
      */
     private int[] scratch;
+
+    /** Lists and neighbours reused when intersecting the options of a domain. */
+    private final List<List<Integer>> neighborCandidates =
+            new ArrayList<>(Collections.nCopies(Direction.ALL.length, null));
+    private final Tile[] neighborTiles = new Tile[Direction.ALL.length];
 
     private int placedCount;
 
@@ -435,50 +442,55 @@ final class TileBoard {
     }
 
     /**
-     * Builds the domain of an empty cell by testing every tile against the tiles
-     * already placed around it.
+     * Computes the domain by intersecting the indexed lists of the neighbours.
+     * Preserves the set order and applies the rule on neighbour names.
      *
      * @param x column
      * @param y row
-     * @return the tiles that fit in the cell, in index order
+     * @return compatible tiles, ordered as in the set
      */
     private int[] computeDomain(int x, int y) {
         if (scratch == null) {
             scratch = new int[set.size()];
         }
-        boolean overlap = set.usesOverlap();
+        int neighborCount = 0;
+        List<Integer> fewest = null;
+        for (Direction direction : Direction.ALL) {
+            Tile neighbor = tileAt(x + direction.dx(), y + direction.dy());
+            if (neighbor == null) {
+                continue;
+            }
+            List<Integer> options = set.compatibleTiles(direction.ownSide(), neighbor);
+            if (options.isEmpty()) {
+                return NO_TILES;
+            }
+            neighborCandidates.set(neighborCount, options);
+            neighborTiles[neighborCount++] = neighbor;
+            if (fewest == null || options.size() < fewest.size()) {
+                fewest = options;
+            }
+        }
+
         int compatible = 0;
-        for (int tileIndex = 0; tileIndex < scratch.length; tileIndex++) {
-            if (isCompatibleWithNeighbors(x, y, tileIndex, overlap)) {
+        if (fewest == null) {
+            for (int i = 0; i < scratch.length; i++) {
+                scratch[compatible++] = i;
+            }
+        } else {
+            candidates:
+            for (int tileIndex : fewest) {
+                Tile tile = set.get(tileIndex);
+                for (int i = 0; i < neighborCount; i++) {
+                    List<Integer> options = neighborCandidates.get(i);
+                    if ((options != fewest && Collections.binarySearch(options, tileIndex) < 0)
+                            || sameNameConflict(tile, neighborTiles[i])) {
+                        continue candidates;
+                    }
+                }
                 scratch[compatible++] = tileIndex;
             }
         }
         return compatible == 0 ? NO_TILES : Arrays.copyOf(scratch, compatible);
-    }
-
-    /**
-     * Checks whether a tile could be placed at a position given the tiles that
-     * already surround it. Only the neighbours that hold a tile are checked, so
-     * the same method works for inner cells and for the border of the board.
-     *
-     * @param x         column where the tile would go
-     * @param y         row where the tile would go
-     * @param tileIndex candidate tile
-     * @param overlap   whether the set compares the middle row and column too
-     * @return {@code true} if no neighbour rejects the candidate
-     */
-    private boolean isCompatibleWithNeighbors(int x, int y, int tileIndex, boolean overlap) {
-        Tile tile = set.get(tileIndex);
-        if (tile == null) {
-            return false;
-        }
-        for (Direction direction : Direction.ALL) {
-            Tile neighbor = tileAt(x + direction.dx(), y + direction.dy());
-            if (neighbor != null && !matches(tile, neighbor, direction, overlap)) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private Tile tileAt(int x, int y) {
@@ -497,36 +509,8 @@ final class TileBoard {
     }
 
     /**
-     * Checks whether a tile and the neighbour it touches agree along the seam.
-     *
-     * <p>The direction carries which side of the tile faces the neighbour and
-     * which side of the neighbour faces back, so a single comparison covers the
-     * four cases. When the set overlaps its patterns, the two tiles also share
-     * the row or column that runs through the middle of the seam, so the middle
-     * of each tile is compared with the far side of the other one.</p>
-     *
-     * @param tile      tile being tested
-     * @param neighbor  tile already placed next to it
-     * @param direction where the neighbour is
-     * @param overlap   whether the set compares the middle row and column too
-     * @return {@code true} if the two tiles can touch
-     */
-    private static boolean matches(Tile tile, Tile neighbor, Direction direction, boolean overlap) {
-        if (sameNameConflict(tile, neighbor)) {
-            return false;
-        }
-        Side own = direction.ownSide();
-        Side other = direction.neighborSide();
-        if (!overlap) {
-            return Arrays.equals(own.zonesOf(tile), other.zonesOf(neighbor));
-        }
-        return Arrays.equals(own.midOf(tile), other.zonesOf(neighbor))
-                && Arrays.equals(own.zonesOf(tile), other.midOf(neighbor));
-    }
-
-    /**
      * A direction towards a neighbour, together with the side of the tile that
-     * faces it and the side of the neighbour that faces back.
+     * faces it.
      *
      * <p>The constants are declared in the order the neighbours are examined. That
      * order decides which placement is tried first and which tiles are cleared
@@ -535,16 +519,16 @@ final class TileBoard {
     private enum Direction {
 
         /** The neighbour is above: the top side of the tile meets its bottom. */
-        UP(0, -1, Side.TOP, Side.BOTTOM),
+        UP(0, -1, Side.TOP),
 
         /** The neighbour is below: the bottom side of the tile meets its top. */
-        DOWN(0, 1, Side.BOTTOM, Side.TOP),
+        DOWN(0, 1, Side.BOTTOM),
 
         /** The neighbour is on the left: the left side meets its right. */
-        LEFT(-1, 0, Side.LEFT, Side.RIGHT),
+        LEFT(-1, 0, Side.LEFT),
 
         /** The neighbour is on the right: the right side meets its left. */
-        RIGHT(1, 0, Side.RIGHT, Side.LEFT);
+        RIGHT(1, 0, Side.RIGHT);
 
         /**
          * The four directions, ready to iterate. It is kept because
@@ -555,13 +539,11 @@ final class TileBoard {
         private final int dx;
         private final int dy;
         private final Side ownSide;
-        private final Side neighborSide;
 
-        Direction(int dx, int dy, Side ownSide, Side neighborSide) {
+        Direction(int dx, int dy, Side ownSide) {
             this.dx = dx;
             this.dy = dy;
             this.ownSide = ownSide;
-            this.neighborSide = neighborSide;
         }
 
         /**
@@ -589,60 +571,6 @@ final class TileBoard {
          */
         private Side ownSide() {
             return ownSide;
-        }
-
-        /**
-         * Gets the side of the neighbour that faces back.
-         *
-         * @return the side of the neighbour
-         */
-        private Side neighborSide() {
-            return neighborSide;
-        }
-    }
-
-    /**
-     * One of the four sides of a tile, with the middle row or column that runs
-     * along it. The middle zones only matter for sets whose patterns overlap.
-     */
-    private enum Side {
-
-        /** Top side, read from left to right. */
-        TOP,
-        /** Right side, read from top to bottom. */
-        RIGHT,
-        /** Bottom side, read from left to right. */
-        BOTTOM,
-        /** Left side, read from top to bottom. */
-        LEFT;
-
-        /**
-         * Gets the three zones of this side.
-         *
-         * @param tile tile to read
-         * @return the zones, in the order the side is read
-         */
-        private char[] zonesOf(Tile tile) {
-            return switch (this) {
-                case TOP -> tile.getTop();
-                case RIGHT -> tile.getRight();
-                case BOTTOM -> tile.getBottom();
-                case LEFT -> tile.getLeft();
-            };
-        }
-
-        /**
-         * Gets the middle row or column this side takes part in: the middle row
-         * for the horizontal sides and the middle column for the vertical ones.
-         *
-         * @param tile tile to read
-         * @return the zones of that row or column
-         */
-        private char[] midOf(Tile tile) {
-            return switch (this) {
-                case TOP, BOTTOM -> tile.getHorizontalMid();
-                case RIGHT, LEFT -> tile.getVerticalMid();
-            };
         }
     }
 }

@@ -1,5 +1,6 @@
 package principal;
 
+import principal.Tile.Side;
 import javafx.scene.image.Image;
 import javafx.scene.image.PixelReader;
 import javafx.scene.image.WritableImage;
@@ -36,9 +37,7 @@ import java.util.Random;
  * </ul>
  *
  * <p>Once the base tiles exist, the mirrors and rotations of every one of them
- * are derived until no new border description appears. Derived tiles are
- * inserted right after the last tile with the same name, so all the variants of
- * a tile stay together.</p>
+ * are derived until no new border description appears.</p>
  */
 enum TileSet {
 
@@ -169,11 +168,13 @@ enum TileSet {
 
     private final TilesSource tilesSource;
 
+    /** Index published before the volatile write to {@link #tiles}. */
+    private Map<SideKey, List<Integer>> compatibleBySide;
+
     /**
-     * The loaded tiles, or {@code null} until they are needed. It is replaced
-     * once by an immutable list, so readers never see a half filled set.
+     * The loaded tiles, or {@code null} until they are needed.
      */
-    private volatile List<Tile> tiles;
+    private volatile Tile[] tiles;
 
     /**
      * Describes a set. The tiles are only loaded when they are first asked for.
@@ -190,7 +191,7 @@ enum TileSet {
      * @return the number of tiles in the set
      */
     int size() {
-        return getTiles().size();
+        return getTiles().length;
     }
 
     /**
@@ -200,11 +201,11 @@ enum TileSet {
      * @return the tile, or {@code null} if the index is out of range
      */
     Tile get(int index) {
-        List<Tile> loaded = getTiles();
-        if (index < 0 || index >= loaded.size()) {
+        Tile[] loaded = getTiles();
+        if (index < 0 || index >= loaded.length) {
             return null;
         }
-        return loaded.get(index);
+        return loaded[index];
     }
 
     /**
@@ -214,8 +215,8 @@ enum TileSet {
      * @return the index of a random tile, or {@code -1} if the set is empty
      */
     int randomTileIndex(Random random) {
-        List<Tile> loaded = getTiles();
-        return loaded.isEmpty() ? -1 : random.nextInt(loaded.size());
+        Tile[] loaded = getTiles();
+        return loaded.length == 0 ? -1 : random.nextInt(loaded.length);
     }
 
     /**
@@ -226,10 +227,10 @@ enum TileSet {
      * @return the index of a random bottom tile, or {@code -1} if the set is empty
      */
     int randomBottomTileIndex(Random random) {
-        List<Tile> loaded = getTiles();
+        Tile[] loaded = getTiles();
         List<Integer> bottomTiles = new ArrayList<>();
-        for (int i = 0; i < loaded.size(); i++) {
-            if (loaded.get(i).isBottomTile()) {
+        for (int i = 0; i < loaded.length; i++) {
+            if (loaded[i].isBottomTile()) {
                 bottomTiles.add(i);
             }
         }
@@ -279,6 +280,23 @@ enum TileSet {
     }
 
     /**
+     * Returns the indices compatible with the opposite side of the neighbour.
+     * The shared list is sorted and must not be modified.
+     *
+     * @param side     side of the candidate facing the neighbour
+     * @param neighbor tile already placed
+     * @return indices compatible by side, without filtering names
+     */
+    List<Integer> compatibleTiles(Side side, Tile neighbor) {
+        getTiles();
+        Side facing = side.opposite();
+        char[] zones = facing.zonesOf(neighbor);
+        char[] mid = usesOverlap() ? facing.midOf(neighbor) : null;
+        String signature = mid == null ? sideSignature(zones, null) : sideSignature(mid, zones);
+        return compatibleBySide.getOrDefault(new SideKey(facing, signature), List.of());
+    }
+
+    /**
      * Returns the folder name, which reads better than the constant name in the
      * set selector of the user interface.
      *
@@ -292,10 +310,10 @@ enum TileSet {
     /**
      * Gets the tiles of this set, loading them on first use.
      *
-     * @return the loaded tiles, immutable and safe to share between threads
+     * @return the loaded tiles
      */
-    private List<Tile> getTiles() {
-        List<Tile> current = tiles;
+    private Tile[] getTiles() {
+        Tile[] current = tiles;
         return current != null ? current : load();
     }
 
@@ -306,22 +324,24 @@ enum TileSet {
      *
      * @return the loaded tiles
      */
-    private synchronized List<Tile> load() {
+    private synchronized Tile[] load() {
         if (tiles != null) {
             return tiles;
         }
 
         List<Tile> building = new ArrayList<>();
-        tilesSource.loadBaseTiles(building);
+        Map<SideKey, List<Integer>> index = new HashMap<>();
+        tilesSource.loadBaseTiles(building, index);
 
         // Deriving may create borders that were still unknown, which in turn can
         // be derived again, so repeat until nothing new shows up.
         boolean added = true;
         while (added) {
-            added = generateDerivedTiles(building);
+            added = generateDerivedTiles(building, index);
         }
 
-        tiles = List.copyOf(building);
+        compatibleBySide = Map.copyOf(index);
+        tiles = building.toArray(Tile[]::new);
         return tiles;
     }
 
@@ -329,21 +349,23 @@ enum TileSet {
      * Adds the mirrors and rotations of every tile already loaded.
      *
      * @param building list the derived tiles are added to
+     * @param index    index updated when each tile is added
      * @return {@code true} if at least one tile with a new border was added
      */
-    private boolean generateDerivedTiles(List<Tile> building) {
-        List<Tile> snapshot = List.copyOf(building);
+    private boolean generateDerivedTiles(List<Tile> building, Map<SideKey, List<Integer>> index) {
+        int initialSize = building.size();
         boolean added = false;
 
-        for (Tile original : snapshot) {
+        for (int i = 0; i < initialSize; i++) {
+            Tile original = building.get(i);
             String sides = original.getSidesDescription();
-            added |= addDerived(building, original, Transform.HORIZONTAL_MIRROR,
+            added |= addDerived(building, index, original, Transform.HORIZONTAL_MIRROR,
                     remapZones(sides, MIRROR_HORIZONTAL));
-            added |= addDerived(building, original, Transform.VERTICAL_MIRROR,
+            added |= addDerived(building, index, original, Transform.VERTICAL_MIRROR,
                     remapZones(sides, MIRROR_VERTICAL));
-            added |= addDerived(building, original, Transform.ROTATE_90, rotateZones(sides, 1));
-            added |= addDerived(building, original, Transform.ROTATE_180, rotateZones(sides, 2));
-            added |= addDerived(building, original, Transform.ROTATE_270, rotateZones(sides, 3));
+            added |= addDerived(building, index, original, Transform.ROTATE_90, rotateZones(sides, 1));
+            added |= addDerived(building, index, original, Transform.ROTATE_180, rotateZones(sides, 2));
+            added |= addDerived(building, index, original, Transform.ROTATE_270, rotateZones(sides, 3));
         }
         return added;
     }
@@ -357,12 +379,14 @@ enum TileSet {
      * whole list because for them the border is the identity of the tile.</p>
      *
      * @param building  list the derived tile is added to
+     * @param index     index updated when the tile is added
      * @param original  tile being derived
      * @param transform transformation to apply
      * @param newSides  border description of the derived tile
      * @return {@code true} if the derived tile was a new one
      */
-    private boolean addDerived(List<Tile> building, Tile original, Transform transform, String newSides) {
+    private boolean addDerived(List<Tile> building, Map<SideKey, List<Integer>> index, Tile original,
+                               Transform transform, String newSides) {
         String onlyForName = tilesSource.dedupesWithinName() ? original.getName() : null;
 
         boolean alreadyExists =
@@ -374,9 +398,25 @@ enum TileSet {
             return false;
         }
 
-        int insertIndex = lastIndexWithName(building, original.getName()) + 1;
-        building.add(insertIndex, original.derive(newSides, transform.applyTo(original.getImage())));
+        addTile(building, index, original.derive(newSides, transform.applyTo(original.getImage())),
+                usesOverlap());
         return !alreadyExists;
+    }
+
+    /** Adds the tile to the list and the side index in the same step. */
+    private static void addTile(List<Tile> building, Map<SideKey, List<Integer>> index,
+                                Tile tile, boolean overlap) {
+        int position = building.size();
+        building.add(tile);
+        for (Side side : Side.ALL) {
+            String signature = sideSignature(side.zonesOf(tile), overlap ? side.midOf(tile) : null);
+            index.computeIfAbsent(new SideKey(side.opposite(), signature), key -> new ArrayList<>()).add(position);
+        }
+    }
+
+    /** Builds a key of three zones or, with overlap, six. */
+    private static String sideSignature(char[] zones, char[] mid) {
+        return mid == null ? new String(zones) : new String(zones) + new String(mid);
     }
 
     /**
@@ -400,22 +440,6 @@ enum TileSet {
             }
         }
         return false;
-    }
-
-    /**
-     * Finds the position of the last tile with the given name.
-     *
-     * @param building list of tiles loaded so far
-     * @param name     name to look for
-     * @return the last index using that name, or {@code -1} if there is none
-     */
-    private static int lastIndexWithName(List<Tile> building, String name) {
-        for (int i = building.size() - 1; i >= 0; i--) {
-            if (building.get(i).getName().equals(name)) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     /**
@@ -472,13 +496,17 @@ enum TileSet {
         return new String(rotated);
     }
 
+    /** Key for the neighbour's side and the zones required by the candidate. */
+    private record SideKey(Side side, String signature) {
+    }
+
     /**
      * The description of a set: how it is called, how big its tiles are and
      * where those tiles come from.
      *
      * <p>This is the single variation point of a tile set, and it holds every
-     * piece of data the loading needs, so {@link #loadBaseTiles(List)} can work
-     * from the list it fills and nothing else. The loading itself, the derived
+     * piece of data the loading needs, so {@link #loadBaseTiles(List, Map)} can work
+     * from the list and index it fills and nothing else. The loading itself, the derived
      * variants and the accessors are shared by every set, so no code has to ask
      * what kind of set it is looking at.</p>
      */
@@ -504,8 +532,9 @@ enum TileSet {
          * afterwards by {@link TileSet}, never here.
          *
          * @param building list the tiles are added to
+         * @param index    index updated when each tile is added
          */
-        void loadBaseTiles(List<Tile> building);
+        void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index);
 
         /**
          * Tells whether a tile counts as a duplicate only when it repeats the
@@ -555,11 +584,12 @@ enum TileSet {
         }
 
         @Override
-        public void loadBaseTiles(List<Tile> building) {
+        public void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index) {
             for (Definition definition : definitions) {
-                building.add(new Tile(definition.name(), definition.sidesDescription(), "",
-                        definition.forcesHorizontalMirror(), definition.forbidsSameNeighbor(),
-                        loadGraphic(definition.name())));
+                addTile(building, index,
+                        new Tile(definition.name(), definition.sidesDescription(), "",
+                                definition.forcesHorizontalMirror(), definition.forbidsSameNeighbor(),
+                                loadGraphic(definition.name())), usesOverlap());
             }
         }
 
@@ -630,7 +660,7 @@ enum TileSet {
         }
 
         @Override
-        public void loadBaseTiles(List<Tile> building) {
+        public void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index) {
             Image sample = loadResource("/sample/" + folderName + ".png");
             if (sample == null) {
                 return;
@@ -657,7 +687,7 @@ enum TileSet {
                     if (usesOverlap && y == height - tileSize) {
                         tile.markAsBottomTile();
                     }
-                    building.add(tile);
+                    addTile(building, index, tile, usesOverlap);
                 }
             }
         }
