@@ -49,7 +49,7 @@ if errorlevel 1 (
 rem ----- Build -----------------------------------------------------
 echo Compiling sources...
 if not exist "%CLASSES%" mkdir "%CLASSES%"
-javac -d "%CLASSES%" --module-path "%JFX_LIB%" --add-modules %MODULES% src\principal\*.java
+javac -encoding UTF-8 -d "%CLASSES%" --module-path "%JFX_LIB%" --add-modules %MODULES% src\principal\*.java
 if errorlevel 1 (
     echo [ERROR] Compilation failed.
     echo         A JDK 17 or newer is required. If "javac -version" reports 1.8,

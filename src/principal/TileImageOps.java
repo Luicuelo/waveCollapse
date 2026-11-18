@@ -113,6 +113,27 @@ final class TileImageOps {
         return region;
     }
 
+    /** Compares every pixel to preserve visually distinct patterns. */
+    static boolean samePixels(Image first, Image second) {
+        if (first == second) {
+            return true;
+        }
+        if (first == null || second == null
+                || first.getWidth() != second.getWidth() || first.getHeight() != second.getHeight()) {
+            return false;
+        }
+        PixelReader firstReader = first.getPixelReader();
+        PixelReader secondReader = second.getPixelReader();
+        for (int y = 0; y < (int) first.getHeight(); y++) {
+            for (int x = 0; x < (int) first.getWidth(); x++) {
+                if (firstReader.getArgb(x, y) != secondReader.getArgb(x, y)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     private static Image rotateQuarterTurn(Image source) {
         int width = (int) source.getWidth();
         int height = (int) source.getHeight();

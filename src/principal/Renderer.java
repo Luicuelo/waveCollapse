@@ -4,6 +4,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.Image;
 import javafx.scene.paint.Color;
 
+import java.util.Arrays;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
@@ -20,14 +21,12 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>The queue is a {@link ConcurrentLinkedQueue} because it is filled from the
  * solver thread and drained from the JavaFX thread. Each generation draws
- * through its own {@linkplain #newSession() session}: a generation that has
- * been thrown away may still queue a few actions while it dies out, and the
- * session token is what keeps them from being painted over the new board.</p>
+ * through its own {@linkplain #newSession(TileBoard) session}. Stopping or
+ * replacing a session discards its pending actions and rejects any later
+ * notifications from that generation. Session changes and frame updates are
+ * performed on the JavaFX thread.</p>
  */
 final class Renderer {
-
-    /** A tile of an overlapping set is as wide as this many cells. */
-    private static final int OVERLAP_SCALE = 3;
 
     /**
      * A pending drawing operation.
@@ -90,6 +89,8 @@ final class Renderer {
     private final Queue<TileAction> pendingActions = new ConcurrentLinkedQueue<>();
     private final AtomicLong session = new AtomicLong();
     private int pixelSize;
+    private int[][] displayedTiles;
+    private int overlapOffsetY;
 
     /**
      * Creates a renderer.
@@ -119,15 +120,51 @@ final class Renderer {
      * Opens the drawing session of a new generation.
      *
      * <p>Every pending action is dropped and the session token is advanced, so
-     * the operations a previous generation still queues while it dies out are
-     * discarded instead of being painted over the new board.</p>
+     * notifications from a previous generation are rejected.</p>
      *
+     * @param board board whose drawing sequence will be displayed
      * @return the listener the new generation has to report to
      */
-    WfcSolver.BoardListener newSession() {
-        long token = session.incrementAndGet();
-        pendingActions.clear();
+    WfcSolver.BoardListener newSession(TileBoard board) {
+        long token = resetPendingActions();
+        displayedTiles = null;
+        overlapOffsetY = 0;
+        TileSet set = board.getSet();
+        if (set.usesOverlap()) {
+            displayedTiles = new int[board.getWidth()][board.getHeight()];
+            for (int[] column : displayedTiles) {
+                Arrays.fill(column, TileBoard.EMPTY);
+            }
+            int cell = cellPixels(set);
+            int imageSize = set.getTileSize() * tilePixelSize(set);
+            overlapOffsetY = (int) gc.getCanvas().getHeight() - (board.getHeight() - 1) * cell - imageSize;
+        }
         return new Session(token);
+    }
+
+    /**
+     * Discards pending actions and prevents the stopped session from adding more.
+     * Already painted tiles remain on the canvas.
+     */
+    void stopSession() {
+        resetPendingActions();
+    }
+
+    private long resetPendingActions() {
+        synchronized (pendingActions) {
+            long token = session.incrementAndGet();
+            pendingActions.clear();
+            return token;
+        }
+    }
+
+    private void enqueue(TileAction action) {
+        // Check and insert atomically with session invalidation and queue clearing.
+        synchronized (pendingActions) {
+            if (action.session() == session.get()) {
+                pendingActions.add(action);
+            }
+        }
     }
 
     /**
@@ -172,16 +209,16 @@ final class Renderer {
             return;
         }
 
-        boolean overlap = set.usesOverlap();
-        int cell = cellPixels(set, overlap);
-        double screenX = (double) x * cell;
-        double screenY = (double) y * cell;
-        // Overlapping patterns are drawn OVERLAP_SCALE times bigger so that they
-        // cover the neighbouring cells they share pixels with.
-        double zoom = (double) pixelSize * (overlap ? OVERLAP_SCALE : 1);
+        if (set.usesOverlap()) {
+            displayedTiles[x][y] = tileIndex;
+            redrawOverlap(set, x, y);
+            return;
+        }
 
+        int cell = cellPixels(set);
         gc.setImageSmoothing(false);
-        gc.drawImage(image, screenX, screenY, image.getWidth() * zoom, image.getHeight() * zoom);
+        gc.drawImage(image, (double) x * cell, (double) y * cell,
+                image.getWidth() * pixelSize, image.getHeight() * pixelSize);
     }
 
     /**
@@ -191,18 +228,59 @@ final class Renderer {
         if (set.get(tileIndex) == null) {
             return;
         }
-        int cell = cellPixels(set, set.usesOverlap());
+        if (set.usesOverlap()) {
+            displayedTiles[x][y] = TileBoard.EMPTY;
+            redrawOverlap(set, x, y);
+            return;
+        }
+        int cell = cellPixels(set);
         gc.setFill(backgroundColor);
         gc.fillRect((double) x * cell, (double) y * cell, cell, cell);
     }
 
     /**
-     * Gets how many screen pixels a cell occupies. For overlapping sets a tile
-     * is as big as its pattern, so the cell is one pattern pixel.
+     * Reconstructs the affected area from the tiles already drawn. Tiles above
+     * and to the right are drawn last and take precedence in the overlap.
      */
-    private int cellPixels(TileSet set, boolean overlap) {
-        int scale = overlap ? OVERLAP_SCALE : set.getTileSize();
-        return pixelSize * scale;
+    private void redrawOverlap(TileSet set, int x, int y) {
+        int cell = cellPixels(set);
+        int zoom = tilePixelSize(set);
+        int imageSize = set.getTileSize() * zoom;
+        double screenX = (double) x * cell;
+        double screenY = (double) y * cell + overlapOffsetY;
+
+        gc.save();
+        gc.beginPath();
+        gc.rect(screenX, screenY, imageSize, imageSize);
+        gc.clip();
+        gc.setFill(backgroundColor);
+        gc.fillRect(screenX, screenY, imageSize, imageSize);
+        gc.setImageSmoothing(false);
+        for (int row = y + 1; row >= y - 1; row--) {
+            for (int column = x - 1; column <= x + 1; column++) {
+                if (column < 0 || column >= displayedTiles.length
+                        || row < 0 || row >= displayedTiles[column].length) {
+                    continue;
+                }
+                Tile tile = set.get(displayedTiles[column][row]);
+                if (tile != null && tile.getImage() != null) {
+                    Image image = tile.getImage();
+                    gc.drawImage(image, (double) column * cell, (double) row * cell + overlapOffsetY,
+                            image.getWidth() * zoom, image.getHeight() * zoom);
+                }
+            }
+        }
+        gc.restore();
+    }
+
+    /** Distance between anchors in screen pixels. */
+    private int cellPixels(TileSet set) {
+        return pixelSize * set.getCellSize();
+    }
+
+    /** Size of a pattern pixel on screen. */
+    private int tilePixelSize(TileSet set) {
+        return pixelSize * (set.usesOverlap() ? set.getTileSize() : 1);
     }
 
     /**
@@ -220,12 +298,12 @@ final class Renderer {
 
         @Override
         public void tilePlaced(int x, int y, int tileIndex, TileSet set) {
-            pendingActions.add(new DrawTileAction(token, x, y, tileIndex, set));
+            enqueue(new DrawTileAction(token, x, y, tileIndex, set));
         }
 
         @Override
         public void tileRemoved(int x, int y, int tileIndex, TileSet set) {
-            pendingActions.add(new EraseTileAction(token, x, y, tileIndex, set));
+            enqueue(new EraseTileAction(token, x, y, tileIndex, set));
         }
     }
 }

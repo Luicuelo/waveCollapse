@@ -188,24 +188,34 @@ public class WaveFunction extends Application {
         long seed = pinnedSeed != null ? pinnedSeed : new Random().nextLong();
         System.out.println("Restarting " + activeSet + " with seed " + seed);
 
-        int tileSize = activeSet.getTileSize();
-        int columns = Math.max(1, canvasWidth / (tileSize * pixelSize));
-        int rows = Math.max(1, canvasHeight / (tileSize * pixelSize));
+        int cell = activeSet.getCellSize() * pixelSize;
+        int overlap = activeSet.usesOverlap() ? activeSet.getTileSize() * pixelSize : 0;
+        int columns = boardDimension(canvasWidth, cell, overlap);
+        int rows = boardDimension(canvasHeight, cell, overlap);
         TileBoard board = new TileBoard(activeSet, columns, rows);
 
         renderer.setPixelSize(pixelSize);
         renderer.clearCanvas();
 
         solver.setSeed(seed);
-        solver.solve(board, renderer.newSession());
+        solver.solve(board, renderer.newSession(board));
+    }
+
+    /** Calculates the cells needed to cover the canvas using the set's anchors. */
+    private static int boardDimension(int canvasSize, int cell, int overlap) {
+        if (overlap == 0) {
+            return Math.max(1, canvasSize / cell);
+        }
+        return Math.max(1, (int) Math.ceil((canvasSize - overlap) / (double) cell));
     }
 
     /**
-     * Stops the generation in progress. The pending drawing actions are still
-     * painted, so the canvas ends up showing the last state of the board.
+     * Stops the generation and discards pending drawing actions, leaving the
+     * canvas as it is.
      */
     private void stopGeneration() {
         solver.stop();
+        renderer.stopSession();
         System.out.println("Generation stopped");
     }
 

@@ -43,7 +43,7 @@ src/principal/
   TileBoard.java      the grid: placement, compatibility rules, entropy scan
   TileSet.java        the available tile sets: where their tiles come from, and
                       the loaded tiles themselves
-  Tile.java           one tile: the eight border zones and its graphic
+  Tile.java           one tile: four independent sides and its graphic
   TileImageOps.java   pixel procedures used to derive variants (mirror, rotate,
                       copy a region of a sample)
   Renderer.java       draws the board, one queued operation per frame
@@ -63,7 +63,7 @@ classpath. Use `;` as separator on Windows and `:` on Linux.
 ```bat
 set JFX_LIB=C:\Program Files\Java\javafx-sdk-21.0.8\lib
 
-javac -d out --module-path "%JFX_LIB%" --add-modules javafx.controls src\principal\*.java
+javac -encoding UTF-8 -d out --module-path "%JFX_LIB%" --add-modules javafx.controls src\principal\*.java
 
 java --module-path "%JFX_LIB%" --add-modules javafx.controls -cp "out;resources" principal.WaveFunction
 ```
@@ -73,7 +73,7 @@ java --module-path "%JFX_LIB%" --add-modules javafx.controls -cp "out;resources"
 ```powershell
 $jfx = "C:\Program Files\Java\javafx-sdk-21.0.8\lib"
 
-javac -d out --module-path $jfx --add-modules javafx.controls src\principal\*.java
+javac -encoding UTF-8 -d out --module-path $jfx --add-modules javafx.controls src\principal\*.java
 
 java --module-path $jfx --add-modules javafx.controls -cp "out;resources" principal.WaveFunction
 ```
@@ -83,7 +83,7 @@ java --module-path $jfx --add-modules javafx.controls -cp "out;resources" princi
 ```bash
 export JFX_LIB=/opt/javafx-sdk-21.0.8/lib
 
-javac -d out --module-path "$JFX_LIB" --add-modules javafx.controls src/principal/*.java
+javac -encoding UTF-8 -d out --module-path "$JFX_LIB" --add-modules javafx.controls src/principal/*.java
 
 java --module-path "$JFX_LIB" --add-modules javafx.controls -cp "out:resources" principal.WaveFunction
 ```
@@ -118,7 +118,7 @@ run.bat
 The sources are documented with Javadoc. To build the HTML docs:
 
 ```bat
-javadoc -private -d docs --module-path "%JFX_LIB%" --add-modules javafx.controls -sourcepath src -subpackages principal
+javadoc -encoding UTF-8 -private -d docs --module-path "%JFX_LIB%" --add-modules javafx.controls -sourcepath src -subpackages principal
 ```
 
 `-Xdoclint:all,-missing` can be added to check the tags without complaining about
@@ -133,8 +133,10 @@ undocumented private fields.
 | `--set=<name>` | `circuit` | tile set to start with, by folder name |
 | `--seed=<long>` | random | seed of the generation |
 
-The board is sized from the canvas: `width / (tileSize * zoom)` columns. A
-larger zoom therefore means a smaller board.
+El tamaño del tablero depende del lienzo y de la distancia entre anclajes. En
+los conjuntos solapados, cada patrón de 3×3 avanza dos píxeles por celda; en los
+demás, cada celda ocupa el tamaño completo del tile. Un zoom mayor reduce el
+número de celdas.
 
 Without `--seed`, every *Restart* picks a new random seed and prints it to the
 console, so any pattern you like can be reproduced later with
@@ -145,7 +147,7 @@ console, so any pattern you like can be reproduced later with
 | Control | Effect |
 |---|---|
 | **Restart** | throws the board away and starts a new generation |
-| **Stop** | stops the generation; the pending drawing operations still finish, so the canvas shows the last state |
+| **Stop** | stops the generation and discards pending drawing operations, leaving the canvas as it is |
 | **Tile set** | loads another set and restarts |
 | **Zoom** | changes the size of a tile pixel and restarts |
 
@@ -154,8 +156,8 @@ console, so any pattern you like can be reproduced later with
 | Set | Loading | Notes |
 |---|---|---|
 | `circuit`, `castle`, `knots`, `simple`, `floorPlan`, `rooms`, `circles` | hand written | each tile is declared inside `TileSet` with an 8 character border description |
-| `NotKnot`, `Link`, `Knot`, `Maze`, `ColoredCity`, `City`, `Skyline`, `Water` | sampled | every 3x3 window of the sample becomes a tile |
-| `Flowers`, `SimpleWall`, `Paths` | sampled, overlapping | neighbouring patterns share one pixel, so the middle row and column are compared too; `Flowers` also starts from the bottom row of the sample |
+| `NotKnot`, `Link`, `Knot`, `Maze`, `ColoredCity`, `City`, `Water` | sampled | every 3x3 window of the sample becomes a tile |
+| `Flowers`, `Skyline`, `SimpleWall`, `Paths` | sampled, overlapping | patrones 3×3 con anclajes separados dos píxeles; `Flowers` y `Skyline` comienzan con un tile de la fila inferior de la muestra |
 
 A set knows both where its graphics live and which tiles it is made of, so the
 list above is the whole content of `TileSet`. The tiles are read the first time
@@ -170,32 +172,42 @@ inline, graphics loaded from `resources/<folder>/`) and `Sampled`
 (`resources/sample/<name>.png` cut into windows, with the overlap and
 from-bottom variants). The strategy fills the list it is given and nothing else,
 so it never needs to reach back into the enum, and `Tile` does not point back at
-its set either: what is shared (loading, derivation, the palette of a sample and
-the accessors) lives in `TileSet` once.
+its set either: shared loading, the palette of a sample and the accessors live in
+`TileSet`. Overlapping samples generate their variants during loading, even for
+original windows with the same signature, and keep one tile per signature. For
+from-bottom sets, windows from the sample's bottom row produce only their
+left-right mirror, which also counts as a bottom tile.
 
 ## How a tile is described
 
-A tile is defined by eight colour zones read clockwise around its border,
-starting at the top-left corner:
+Cada tile tiene cuatro lados de tres zonas, descritos internamente como
+`TTTRRRBBBLLL`. Los lados horizontales se leen de izquierda a derecha y los
+verticales de arriba abajo. Dos tiles son compatibles cuando coinciden sus
+lados enfrentados.
+
+En las definiciones manuales se mantienen las ocho zonas originales; al cargar
+el conjunto se amplían a los cuatro lados. En las muestras se asigna una letra a
+cada color. En las muestras solapadas se generan las variantes de cada ventana
+y se conserva un solo tile por firma; en las demás se conserva el comportamiento
+anterior. Para un patrón solapado como este:
+
 ```
-    0 1 2        0 = top-left      4 = bottom-right
-    7   3        1 = top-center    5 = bottom-center
-    6 5 4        2 = top-right     6 = bottom-left
-                 3 = right-center  7 = left-center
+A B C
+D E F
+G H I
 ```
 
-Corners are shared by the two sides they belong to, so eight zones describe the
-whole border. Two tiles may touch only when the zones of the touching sides are
-identical. For sampled sets the zones are letters assigned to the colours of the
-sample (`A`, `B`, `C`...), and the tile is identified by that description, which
-is what keeps a sample with thousands of windows down to a few dozen tiles.
-
-Rotations and mirrors are generated from every base tile, both the description
-and the image, until no new border shows up.
+Los lados efectivos son `top = DEF`, `right = BEH`, `bottom = GHI` y
+`left = ADG`. Al girar o reflejar una imagen, sus lados se vuelven a leer de la
+imagen transformada. En el dibujo, los tiles superiores y los de la derecha
+prevalecen en los solapes, independientemente del orden de colocación.
 
 ## How the generation works
 
-1. Seed the board with one random tile (or a bottom tile, for sets that need it).
+1. Seed overlapping boards at the bottom left and other boards at the centre.
+   Choose a random tile, or a bottom-row sample tile for sets that need it.
+   For from-bottom sets, bottom tiles may only be placed in the board's bottom
+   row; other tiles are also allowed there.
 2. Find the placed tile with the fewest legal continuations around it. Ties are
    broken at random.
 3. Collect the tiles that can be placed in its empty neighbours, respecting the
@@ -229,9 +241,9 @@ its neighbours are already painted.
   board, never to the one the user is already looking at.
 - Changes reach the drawing side as immutable actions that carry the tile index
   and the tile set already resolved, in a `ConcurrentLinkedQueue`. Every
-  generation draws through its own session, and the renderer discards any action
-  whose session is no longer the current one, so an abandoned run cannot paint
-  over the new board.
+  generation draws through its own session. Stopping or replacing the session
+  clears its pending actions and rejects late notifications, so an abandoned run
+  cannot paint over the canvas.
 
 ## Known limitations
 

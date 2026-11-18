@@ -7,6 +7,7 @@ import javafx.scene.image.WritableImage;
 
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,15 +30,13 @@ import java.util.Random;
  * <ul>
  *   <li>{@link HandWritten} sets declare their tiles one by one and load their
  *       graphics from {@code /&lt;folder&gt;/&lt;name&gt;.png}.</li>
- *   <li>{@link Sampled} sets take every window of
- *       {@code /sample/&lt;name&gt;.png}. When the patterns overlap, neighbouring
- *       tiles share one pixel, so the middle row and column take part in the
- *       compatibility test too; the "from bottom" variant seeds the generation
- *       from the bottom row of the sample (useful for scrolling backgrounds).</li>
+ *   <li>{@link Sampled} extracts each window from
+ *       {@code /sample/&lt;name&gt;.png}. For overlapping sets, the top and right
+ *       sides are read from the inner lines; the "from bottom" variant starts
+ *       with a tile from the sample's last row.</li>
  * </ul>
  *
- * <p>Once the base tiles exist, the mirrors and rotations of every one of them
- * are derived until no new border description appears.</p>
+ * <p>Base tiles are mirrored and rotated to generate their variants.</p>
  */
 enum TileSet {
 
@@ -152,13 +151,13 @@ enum TileSet {
     CITY(Sampled.plain("City")),
 
     /** Sample: non overlapping windows. */
-    SKYLINE(Sampled.plain("Skyline")),
-
-    /** Sample: non overlapping windows. */
     WATER(Sampled.plain("Water")),
 
     /** Sample: overlapping windows, seeded from the bottom row of the sample. */
-    FLOWERS(Sampled.fromBottom("Flowers")),
+    FLOWERS(Sampled.fromBottomNoOverlap("Flowers2")),
+
+    /** Sample: overlapping windows, seeded from the bottom row of the sample. */
+    SKYLINE(Sampled.fromBottomNoOverlap("Skyline")),
 
     /** Sample: overlapping windows. */
     SIMPLE_WALL(Sampled.overlapping("SimpleWall")),
@@ -168,8 +167,18 @@ enum TileSet {
 
     private final TilesSource tilesSource;
 
+    /** Shared empty result for a side that has no compatible tile. */
+    private static final int[] NO_OPTIONS = new int[0];
+
     /** Index published before the volatile write to {@link #tiles}. */
-    private Map<SideKey, List<Integer>> compatibleBySide;
+    private Map<SideKey, int[]> compatibleBySide;
+
+    /**
+     * Ascending index of every tile, published like {@link #compatibleBySide}
+     * before the volatile write to {@link #tiles}. Shared and only read, it is
+     * the whole domain a fully isolated cell starts from.
+     */
+    private int[] allTileIndices;
 
     /**
      * The loaded tiles, or {@code null} until they are needed.
@@ -241,8 +250,7 @@ enum TileSet {
     }
 
     /**
-     * Tells whether this set uses overlapping patterns, in which case the middle
-     * row and column of a tile are compared too.
+     * Indicates whether the set's patterns overlap.
      *
      * @return {@code true} if the set overlaps its patterns
      */
@@ -279,21 +287,36 @@ enum TileSet {
         return tilesSource.tileSize();
     }
 
+    /** Distance between anchors before applying the screen zoom. */
+    int getCellSize() {
+        int size = getTileSize();
+        return usesOverlap() ? (size - 1) * size : size;
+    }
+
     /**
-     * Returns the indices compatible with the opposite side of the neighbour.
-     * The shared list is sorted and must not be modified.
+     * Returns the tiles that fit a neighbour already placed on one side. The
+     * index keys each tile by the neighbour's facing side and the zones it must
+     * meet there, so this is a direct lookup with no extra inversion.
+     * The shared array is sorted ascending and must not be modified.
      *
-     * @param side     side of the candidate facing the neighbour
-     * @param neighbor tile already placed
+     * @param facing    side of the neighbour that faces the candidate
+     * @param signature zones that neighbour exposes on the facing side
      * @return indices compatible by side, without filtering names
      */
-    List<Integer> compatibleTiles(Side side, Tile neighbor) {
+    int[] compatibleTiles(Side facing, String signature) {
         getTiles();
-        Side facing = side.opposite();
-        char[] zones = facing.zonesOf(neighbor);
-        char[] mid = usesOverlap() ? facing.midOf(neighbor) : null;
-        String signature = mid == null ? sideSignature(zones, null) : sideSignature(mid, zones);
-        return compatibleBySide.getOrDefault(new SideKey(facing, signature), List.of());
+        return compatibleBySide.getOrDefault(new SideKey(facing, signature), NO_OPTIONS);
+    }
+
+    /**
+     * Returns the index of every tile, ascending and shared. It is the domain of
+     * a cell with no placed neighbour, so the caller must not modify it.
+     *
+     * @return every tile index, ordered as in the set
+     */
+    int[] allTileIndices() {
+        getTiles();
+        return allTileIndices;
     }
 
     /**
@@ -331,18 +354,45 @@ enum TileSet {
 
         List<Tile> building = new ArrayList<>();
         Map<SideKey, List<Integer>> index = new HashMap<>();
-        tilesSource.loadBaseTiles(building, index);
+        Palette palette = new Palette();
+        tilesSource.loadBaseTiles(building, index, palette);
 
-        // Deriving may create borders that were still unknown, which in turn can
-        // be derived again, so repeat until nothing new shows up.
-        boolean added = true;
-        while (added) {
-            added = generateDerivedTiles(building, index);
+        if (!tilesSource.derivesDuringLoad()) {
+            // New variants can also produce other transformations.
+            boolean added = true;
+            while (added) {
+                added = generateDerivedTiles(building, index, palette);
+            }
         }
 
-        compatibleBySide = Map.copyOf(index);
+        compatibleBySide = freezeIndex(index);
+        allTileIndices = ascendingIndices(building.size());
         tiles = building.toArray(Tile[]::new);
         return tiles;
+    }
+
+    /** Fills {@code 0..size-1} ascending: the shared full domain. */
+    private static int[] ascendingIndices(int size) {
+        int[] indices = new int[size];
+        for (int i = 0; i < size; i++) {
+            indices[i] = i;
+        }
+        return indices;
+    }
+
+    /**
+     * Freezes the mutable building index into ascending {@code int} arrays. Each
+     * list already holds the tile positions in loading order, so sorting keeps
+     * them ascending; the domain later intersects those arrays by merging.
+     */
+    private static Map<SideKey, int[]> freezeIndex(Map<SideKey, List<Integer>> index) {
+        Map<SideKey, int[]> frozen = new HashMap<>(index.size());
+        index.forEach((key, positions) -> {
+            int[] ascending = positions.stream().mapToInt(Integer::intValue).toArray();
+            Arrays.sort(ascending);
+            frozen.put(key, ascending);
+        });
+        return Map.copyOf(frozen);
     }
 
     /**
@@ -350,22 +400,18 @@ enum TileSet {
      *
      * @param building list the derived tiles are added to
      * @param index    index updated when each tile is added
-     * @return {@code true} if at least one tile with a new border was added
+     * @return {@code true} if at least one distinct tile was added
      */
-    private boolean generateDerivedTiles(List<Tile> building, Map<SideKey, List<Integer>> index) {
+    private boolean generateDerivedTiles(List<Tile> building, Map<SideKey, List<Integer>> index,
+                                         Palette palette) {
         int initialSize = building.size();
         boolean added = false;
 
         for (int i = 0; i < initialSize; i++) {
             Tile original = building.get(i);
-            String sides = original.getSidesDescription();
-            added |= addDerived(building, index, original, Transform.HORIZONTAL_MIRROR,
-                    remapZones(sides, MIRROR_HORIZONTAL));
-            added |= addDerived(building, index, original, Transform.VERTICAL_MIRROR,
-                    remapZones(sides, MIRROR_VERTICAL));
-            added |= addDerived(building, index, original, Transform.ROTATE_90, rotateZones(sides, 1));
-            added |= addDerived(building, index, original, Transform.ROTATE_180, rotateZones(sides, 2));
-            added |= addDerived(building, index, original, Transform.ROTATE_270, rotateZones(sides, 3));
+            for (Transform transform : Transform.values()) {
+                added |= addDerived(building, index, original, transform, palette);
+            }
         }
         return added;
     }
@@ -375,22 +421,22 @@ enum TileSet {
      *
      * <p>The scope of the duplicate check is decided by the {@link TilesSource}:
      * hand declared sets only compare against tiles with the same name, so two
-     * different tiles may share a border, while sampled sets compare against the
-     * whole list because for them the border is the identity of the tile.</p>
+     * different tiles may share a border. Non-overlapping sampled sets also
+     * compare every pixel in the image.</p>
      *
      * @param building  list the derived tile is added to
      * @param index     index updated when the tile is added
      * @param original  tile being derived
      * @param transform transformation to apply
-     * @param newSides  border description of the derived tile
+     * @param palette   palette shared during loading
      * @return {@code true} if the derived tile was a new one
      */
     private boolean addDerived(List<Tile> building, Map<SideKey, List<Integer>> index, Tile original,
-                               Transform transform, String newSides) {
+                               Transform transform, Palette palette) {
         String onlyForName = tilesSource.dedupesWithinName() ? original.getName() : null;
-
-        boolean alreadyExists =
-                descriptionExists(building, newSides, original.getMidDescription(), onlyForName);
+        Image image = transform.applyTo(original.getImage());
+        String newSides = tilesSource.describeTransformed(original, transform, image, palette);
+        boolean alreadyExists = findMatchingTile(building, newSides, onlyForName, image) != null;
         boolean mandatory =
                 original.forcesHorizontalMirror() && transform == Transform.HORIZONTAL_MIRROR;
 
@@ -398,48 +444,43 @@ enum TileSet {
             return false;
         }
 
-        addTile(building, index, original.derive(newSides, transform.applyTo(original.getImage())),
-                usesOverlap());
+        addTile(building, index, original.derive(newSides, image));
         return !alreadyExists;
     }
 
-    /** Adds the tile to the list and the side index in the same step. */
-    private static void addTile(List<Tile> building, Map<SideKey, List<Integer>> index,
-                                Tile tile, boolean overlap) {
-        int position = building.size();
-        building.add(tile);
-        for (Side side : Side.ALL) {
-            String signature = sideSignature(side.zonesOf(tile), overlap ? side.midOf(tile) : null);
-            index.computeIfAbsent(new SideKey(side.opposite(), signature), key -> new ArrayList<>()).add(position);
+        /** Adds the tile to the list and the side index in the same step. */
+        private static void addTile(List<Tile> building, Map<SideKey, List<Integer>> index, Tile tile) {
+            int position = building.size();
+            building.add(tile);
+            for (Side side : Side.ALL) {
+                // Bottom tiles (ground) cannot have neighbors BELOW them (Side.BOTTOM).
+                // They MUST allow neighbors ABOVE (Side.TOP) for flowers/grass.
+                if (tile.isBottomTile() && side == Side.BOTTOM) {
+                    continue;
+                }
+                String signature = new String(side.zonesOf(tile));
+                // Key by the neighbour's facing side (side.opposite) and the zones
+                // it must meet, since the candidate carries `signature` on its own
+                // `side`. compatibleTiles then looks this up directly.
+                index.computeIfAbsent(new SideKey(side.opposite(), signature), key -> new ArrayList<>()).add(position);
+            }
         }
-    }
-
-    /** Builds a key of three zones or, with overlap, six. */
-    private static String sideSignature(char[] zones, char[] mid) {
-        return mid == null ? new String(zones) : new String(zones) + new String(mid);
-    }
 
     /**
-     * Tells whether a tile with the given border and centre is already loaded.
-     *
-     * @param building    list of tiles loaded so far
-     * @param sides       border description to look for
-     * @param mid         centre zone to look for
-     * @param onlyForName when not {@code null}, only tiles with this name are
-     *                    taken into account
-     * @return {@code true} if such a tile exists
+     * Finds an equivalent description. Non-overlapping samples also compare the
+     * entire image because signatures do not include all of its pixels.
      */
-    private static boolean descriptionExists(List<Tile> building, String sides, String mid,
-                                             String onlyForName) {
+    private static Tile findMatchingTile(List<Tile> building, String sides, String onlyForName, Image image) {
         for (Tile tile : building) {
             if (onlyForName != null && !tile.getName().equals(onlyForName)) {
                 continue;
             }
-            if (tile.getSidesDescription().equals(sides) && tile.getMidDescription().equals(mid)) {
-                return true;
+            if (tile.getSidesDescription().equals(sides)
+                    && (onlyForName != null || TileImageOps.samePixels(tile.getImage(), image))) {
+                return tile;
             }
         }
-        return false;
+        return null;
     }
 
     /**
@@ -480,20 +521,18 @@ enum TileSet {
     /**
      * Rotates a border description clockwise.
      *
-     * <p>Every quarter turn shifts the eight zones six positions, which is the
-     * same as saying the new top side is the old left side read upwards.</p>
+     * <p>Each rotation uses the four oriented side descriptions.</p>
      *
      * @param sides the border description
      * @param turns number of quarter turns, clockwise
      * @return the rotated description
      */
     private static String rotateZones(String sides, int turns) {
-        int shift = (6 * turns) % Tile.SIDES_LENGTH;
-        char[] rotated = new char[Tile.SIDES_LENGTH];
-        for (int i = 0; i < Tile.SIDES_LENGTH; i++) {
-            rotated[i] = sides.charAt((i + shift) % Tile.SIDES_LENGTH);
+        String rotated = sides;
+        for (int i = 0; i < turns; i++) {
+            rotated = remapZones(rotated, ROTATE_CLOCKWISE);
         }
-        return new String(rotated);
+        return rotated;
     }
 
     /** Key for the neighbour's side and the zones required by the candidate. */
@@ -505,10 +544,9 @@ enum TileSet {
      * where those tiles come from.
      *
      * <p>This is the single variation point of a tile set, and it holds every
-     * piece of data the loading needs, so {@link #loadBaseTiles(List, Map)} can work
-     * from the list and index it fills and nothing else. The loading itself, the derived
-     * variants and the accessors are shared by every set, so no code has to ask
-     * what kind of set it is looking at.</p>
+     * piece of data the loading needs, so {@link #loadBaseTiles(List, Map, Palette)} can work
+     * from the list and index it fills and nothing else. The source can also
+     * generate its own variants when deduplication requires it.</p>
      */
     private interface TilesSource {
 
@@ -528,13 +566,30 @@ enum TileSet {
         int tileSize();
 
         /**
-         * Creates the base tiles of a set. The derived variants are added
-         * afterwards by {@link TileSet}, never here.
+         * Loads the tiles and, if the source requires it, their variants as well.
          *
          * @param building list the tiles are added to
          * @param index    index updated when each tile is added
+         * @param palette  palette shared during loading
          */
-        void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index);
+        void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index, Palette palette);
+
+        /** Indicates whether the source generates its variants during loading. */
+        default boolean derivesDuringLoad() {
+            return false;
+        }
+
+        /** Calculates the sides of a transformed image. */
+        default String describeTransformed(Tile original, Transform transform, Image image, Palette palette) {
+            String sides = original.getSidesDescription();
+            return switch (transform) {
+                case HORIZONTAL_MIRROR -> remapZones(sides, MIRROR_HORIZONTAL);
+                case VERTICAL_MIRROR -> remapZones(sides, MIRROR_VERTICAL);
+                case ROTATE_90 -> rotateZones(sides, 1);
+                case ROTATE_180 -> rotateZones(sides, 2);
+                case ROTATE_270 -> rotateZones(sides, 3);
+            };
+        }
 
         /**
          * Tells whether a tile counts as a duplicate only when it repeats the
@@ -548,8 +603,7 @@ enum TileSet {
         }
 
         /**
-         * Tells whether the patterns of the set overlap their neighbours, in
-         * which case the middle row and column of a tile are compared as well.
+         * Indicates whether the set's patterns overlap.
          *
          * @return {@code true} for overlapping patterns
          */
@@ -584,13 +638,26 @@ enum TileSet {
         }
 
         @Override
-        public void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index) {
+        public void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index, Palette palette) {
             for (Definition definition : definitions) {
                 addTile(building, index,
-                        new Tile(definition.name(), definition.sidesDescription(), "",
+                        new Tile(definition.name(), expandSides(definition.sidesDescription()),
                                 definition.forcesHorizontalMirror(), definition.forbidsSameNeighbor(),
-                                loadGraphic(definition.name())), usesOverlap());
+                                loadGraphic(definition.name())));
             }
+        }
+
+        /** Expands the traditional eight-zone description into four sides. */
+        private static String expandSides(String sides) {
+            if (sides.length() != 8) {
+                throw new IllegalArgumentException("A hand-written tile must have eight zones");
+            }
+            int[] positions = {0, 1, 2, 2, 3, 4, 6, 5, 4, 0, 7, 6};
+            StringBuilder expanded = new StringBuilder(Tile.SIDES_LENGTH);
+            for (int position : positions) {
+                expanded.append(sides.charAt(position));
+            }
+            return expanded.toString();
         }
 
         @Override
@@ -613,9 +680,8 @@ enum TileSet {
     }
 
     /**
-     * A set whose tiles are every window of a sample image. Windows whose border
-     * (and centre) was already seen are skipped, which is what turns a bitmap
-     * into a set of distinct tiles.
+     * A set whose tiles are the distinct windows of a sample.
+     * Overlapping patterns are deduplicated by their sides after generating their variants.
      *
      * @param folderName       name of the sample, without extension
      * @param tileSize         side of a window, in pixels
@@ -659,8 +725,18 @@ enum TileSet {
             return new Sampled(sampleName, TILESIZE, true, true);
         }
 
+        /**
+         * An overlapping sample whose generation is seeded from its bottom row.
+         *
+         * @param sampleName name of the sample image, without extension
+         * @return the description of that set
+         */
+        private static Sampled fromBottomNoOverlap(String sampleName) {
+            return new Sampled(sampleName, TILESIZE, false, true);
+        }
+
         @Override
-        public void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index) {
+        public void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index, Palette palette) {
             Image sample = loadResource("/sample/" + folderName + ".png");
             if (sample == null) {
                 return;
@@ -669,63 +745,128 @@ enum TileSet {
             PixelReader reader = sample.getPixelReader();
             int width = (int) sample.getWidth();
             int height = (int) sample.getHeight();
-            Palette palette = new Palette();
 
-            for (int y = 0; y + tileSize <= height; y++) {
+            if (usesOverlap) {
+                loadOverlappingTiles(building, index, palette, reader, width, height);
+                return;
+            }
+
+                        for (int y = 0; y + tileSize <= height; y++) {
                 for (int x = 0; x + tileSize <= width; x++) {
                     WritableImage pattern = TileImageOps.copyRegion(reader, x, y, tileSize);
                     PixelReader patternReader = pattern.getPixelReader();
-                    String sides = describeSides(palette, patternReader, tileSize);
-                    String mid = describeMid(palette, patternReader, tileSize);
-
-                    if (descriptionExists(building, sides, mid, null)) {
+                    String sides = describeSides(palette, patternReader, tileSize, usesOverlap);
+                    Tile existing = findMatchingTile(building, sides, null, pattern);
+                    if (existing != null) {
                         continue;
                     }
 
                     Tile tile = new Tile(folderName + "_" + x + "_" + y,
-                            sides, mid, false, false, pattern);
-                    if (usesOverlap && y == height - tileSize) {
+                            sides, false, false, pattern);
+
+                    // If the set is configured to start from bottom, mark tiles from the last row of the sample as bottom tiles
+                    if (startsFromBottom && y == height - tileSize) {
                         tile.markAsBottomTile();
                     }
-                    addTile(building, index, tile, usesOverlap);
+
+                    addTile(building, index, tile);
                 }
             }
         }
 
-        /**
-         * Reads the eight border zones of a pattern, clockwise from the top-left
-         * corner, and turns them into their letters.
-         *
-         * @param palette   letters assigned so far
-         * @param pattern   pixels of one pattern
-         * @param tileSize  side of the pattern, in pixels
-         * @return the border description
-         */
-        private static String describeSides(Palette palette, PixelReader pattern, int tileSize) {
-            int mid = tileSize / 2;
-            int last = tileSize - 1;
-            StringBuilder description = new StringBuilder(Tile.SIDES_LENGTH);
-            description.append(palette.letterFor(pattern.getArgb(0, 0))); // top-left
-            description.append(palette.letterFor(pattern.getArgb(mid, 0))); // top-center
-            description.append(palette.letterFor(pattern.getArgb(last, 0))); // top-right
-            description.append(palette.letterFor(pattern.getArgb(last, mid))); // right-center
-            description.append(palette.letterFor(pattern.getArgb(last, last))); // bottom-right
-            description.append(palette.letterFor(pattern.getArgb(mid, last))); // bottom-center
-            description.append(palette.letterFor(pattern.getArgb(0, last))); // bottom-left
-            description.append(palette.letterFor(pattern.getArgb(0, mid))); // left-center
-            return description.toString();
+        /** Generates the permitted symmetries of every window, including duplicates. */
+        private void loadOverlappingTiles(List<Tile> building, Map<SideKey, List<Integer>> index,
+                                          Palette palette, PixelReader reader, int width, int height) {
+            record SampleWindow(Tile tile, boolean bottomRow) { }
+            List<SampleWindow> originals = new ArrayList<>();
+            Map<String, Tile> bySignature = new HashMap<>();
+            for (int y = 0; y + tileSize <= height; y++) {
+                for (int x = 0; x + tileSize <= width; x++) {
+                    Image image = TileImageOps.copyRegion(reader, x, y, tileSize);
+                    String sides = describeSides(palette, image.getPixelReader(), tileSize, true);
+                    Tile original = new Tile(folderName + "_" + x + "_" + y, sides, false, false, image);
+                    boolean bottomRow = y == height - tileSize;
+                    if (bottomRow) {
+                        original.markAsBottomTile();
+                    }
+                    originals.add(new SampleWindow(original, bottomRow));
+                    addOverlappingTile(original, building, index, bySignature);
+                }
+            }
+
+            // Even if two originals share a signature, their mirrors may differ.
+            for (SampleWindow window : originals) {
+                Tile original = window.tile();
+                Image image = original.getImage();
+                Image mirrored = TileImageOps.mirrorHorizontally(image);
+                if (startsFromBottom && window.bottomRow()) {
+                    addOverlappingVariant(original, mirrored, true, building, index, palette, bySignature);
+                    continue;
+                }
+                for (int turns = 0; turns < 4; turns++) {
+                    if (turns > 0) {
+                        addOverlappingVariant(original, TileImageOps.rotateClockwise(image, turns),
+                                false, building, index, palette, bySignature);
+                    }
+                    addOverlappingVariant(original, TileImageOps.rotateClockwise(mirrored, turns),
+                            false, building, index, palette, bySignature);
+                }
+            }
         }
 
-        /**
-         * Reads the centre zone of a pattern.
-         *
-         * @param palette  letters assigned so far
-         * @param pattern  pixels of one pattern
-         * @param tileSize side of the pattern, in pixels
-         * @return the letter of the centre colour
-         */
-        private static String describeMid(Palette palette, PixelReader pattern, int tileSize) {
-            return palette.letterFor(pattern.getArgb(tileSize / 2, tileSize / 2));
+        private void addOverlappingVariant(Tile original, Image image, boolean bottomTile, List<Tile> building,
+                                           Map<SideKey, List<Integer>> index, Palette palette,
+                                           Map<String, Tile> bySignature) {
+            String sides = describeSides(palette, image.getPixelReader(), tileSize, true);
+            Tile variant = original.derive(sides, image);
+            if (bottomTile) {
+                variant.markAsBottomTile();
+            }
+            addOverlappingTile(variant, building, index, bySignature);
+        }
+
+        private static void addOverlappingTile(Tile tile, List<Tile> building,
+                                               Map<SideKey, List<Integer>> index,
+                                               Map<String, Tile> bySignature) {
+            Tile existing = bySignature.putIfAbsent(tile.getSidesDescription(), tile);
+            if (existing == null) {
+                addTile(building, index, tile);
+            } else if (tile.isBottomTile()) {
+                existing.markAsBottomTile();
+            }
+        }
+
+        @Override
+        public boolean derivesDuringLoad() {
+            return usesOverlap;
+        }
+
+        @Override
+        public String describeTransformed(Tile original, Transform transform, Image image, Palette palette) {
+            return describeSides(palette, image.getPixelReader(), tileSize, usesOverlap);
+        }
+
+        /** Reads the four effective sides directly from the pixels. */
+        private static String describeSides(Palette palette, PixelReader pattern, int tileSize, boolean overlap) {
+            int inner = tileSize / 2;
+            int last = tileSize - 1;
+            int top = overlap ? inner : 0;
+            int right = overlap ? inner : last;
+            int[] positions = {0, inner, last};
+            StringBuilder description = new StringBuilder(Tile.SIDES_LENGTH);
+            for (int x : positions) {
+                description.append(palette.letterFor(pattern.getArgb(x, top)));
+            }
+            for (int y : positions) {
+                description.append(palette.letterFor(pattern.getArgb(right, y)));
+            }
+            for (int x : positions) {
+                description.append(palette.letterFor(pattern.getArgb(x, last)));
+            }
+            for (int y : positions) {
+                description.append(palette.letterFor(pattern.getArgb(0, y)));
+            }
+            return description.toString();
         }
     }
 
@@ -779,8 +920,7 @@ enum TileSet {
     }
 
     /**
-     * The variant of a tile the set derives from it: the border description is
-     * remapped by the set and the graphic by {@link TileImageOps}.
+     * Transformations of tile graphics and their side descriptions.
      */
     private enum Transform {
 
@@ -816,11 +956,14 @@ enum TileSet {
      * Indexes of the border zones when a tile is mirrored vertically (top and
      * bottom swapped). {@code mirrored[i] = original[MIRROR_VERTICAL[i]]}.
      */
-    private static final int[] MIRROR_VERTICAL = {6, 5, 4, 3, 2, 1, 0, 7};
+    private static final int[] MIRROR_VERTICAL = {6, 7, 8, 5, 4, 3, 0, 1, 2, 11, 10, 9};
 
     /**
      * Indexes of the border zones when a tile is mirrored horizontally (left
      * and right swapped). {@code mirrored[i] = original[MIRROR_HORIZONTAL[i]]}.
      */
-    private static final int[] MIRROR_HORIZONTAL = {2, 1, 0, 7, 6, 5, 4, 3};
+    private static final int[] MIRROR_HORIZONTAL = {2, 1, 0, 9, 10, 11, 8, 7, 6, 3, 4, 5};
+
+    /** Side mapping for a 90-degree clockwise rotation. */
+    private static final int[] ROTATE_CLOCKWISE = {11, 10, 9, 0, 1, 2, 5, 4, 3, 6, 7, 8};
 }

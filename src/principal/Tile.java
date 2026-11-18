@@ -5,23 +5,10 @@ import javafx.scene.image.Image;
 /**
  * A tile that can be placed on a {@link TileBoard}.
  *
- * <p>The shape of a tile is described by an eight character string, read
- * clockwise around its border starting at the top-left corner:</p>
- *
- * <pre>
- *     0 1 2        0 = top-left      4 = bottom-right
- *     7   3        1 = top-center    5 = bottom-center
- *     6 5 4        2 = top-right     6 = bottom-left
- *                  3 = right-center  7 = left-center
- * </pre>
- *
- * <p>Corner zones are shared by the two sides they belong to, so eight zones
- * are enough to rebuild the three zones of every side. Two tiles may be placed
- * side by side only when the zones of the touching sides are identical.</p>
- *
- * <p>Overlapping sets need one extra zone: the centre of the pattern
- * ({@code midDescription}). It completes the middle row and the middle column
- * that such sets compare when two patterns overlap.</p>
+ * <p>The sides are described by twelve characters in the order
+ * {@code TTTRRRBBBLLL}. Each side has three independent zones: horizontal sides
+ * are read from left to right and vertical sides from top to bottom.
+ * Two tiles are compatible when their facing sides match.</p>
  *
  * <p>A tile is a plain, immutable value: it holds the zones of its border and
  * the image that goes with them, and it knows nothing about files, sampling or
@@ -34,14 +21,13 @@ import javafx.scene.image.Image;
  */
 final class Tile {
 
-    /** Number of zones used to describe the border of a tile. */
-    static final int SIDES_LENGTH = 8;
+    /** Number of zones across all four sides. */
+    static final int SIDES_LENGTH = 12;
     /** Number of zones of a single side. */
     static final int ZONES_PER_SIDE = 3;
 
     private final String name;
     private final String sidesDescription;
-    private final String midDescription;
     private final boolean forbidsSameNeighbor;
     private final boolean forcesHorizontalMirror;
     private final Image image;
@@ -50,8 +36,6 @@ final class Tile {
     private final char[] right = new char[ZONES_PER_SIDE];
     private final char[] bottom = new char[ZONES_PER_SIDE];
     private final char[] left = new char[ZONES_PER_SIDE];
-    private final char[] horizontalMid = new char[ZONES_PER_SIDE];
-    private final char[] verticalMid = new char[ZONES_PER_SIDE];
 
     private boolean bottomTile;
 
@@ -59,18 +43,15 @@ final class Tile {
      * Builds a tile from its textual description.
      *
      * @param name                   name of the tile, without extension
-     * @param sidesDescription       eight zones read clockwise from the top-left
-     * @param midDescription         colour zone at the centre of the pattern, or
-     *                               an empty string for non overlapping tiles
+     * @param sidesDescription       twelve zones in the order TTTRRRBBBLLL
      * @param forcesHorizontalMirror whether the horizontal mirror must be added
      *                               even if an equivalent tile already exists
      * @param forbidsSameNeighbor    whether two tiles with the same name must
      *                               never touch each other
      * @param image                  graphic of the tile
-     * @throws IllegalArgumentException if the description does not have exactly
-     *                                  eight zones
+     * @throws IllegalArgumentException if the description does not have twelve zones
      */
-    Tile(String name, String sidesDescription, String midDescription,
+    Tile(String name, String sidesDescription,
          boolean forcesHorizontalMirror, boolean forbidsSameNeighbor, Image image) {
         if (sidesDescription == null || sidesDescription.length() != SIDES_LENGTH) {
             throw new IllegalArgumentException(
@@ -79,38 +60,14 @@ final class Tile {
 
         this.name = name;
         this.sidesDescription = sidesDescription;
-        this.midDescription = midDescription == null ? "" : midDescription;
         this.forcesHorizontalMirror = forcesHorizontalMirror;
         this.forbidsSameNeighbor = forbidsSameNeighbor;
         this.image = image;
 
-        // Top: zones 0, 1 and 2.
-        top[0] = sidesDescription.charAt(0);
-        top[1] = sidesDescription.charAt(1);
-        top[2] = sidesDescription.charAt(2);
-
-        // Right: reuses the top-right corner (2) and ends at the bottom-right (4).
-        right[0] = sidesDescription.charAt(2);
-        right[1] = sidesDescription.charAt(3);
-        right[2] = sidesDescription.charAt(4);
-
-        // Bottom: read from right to left, so the bottom-right corner is first.
-        bottom[0] = sidesDescription.charAt(6);
-        bottom[1] = sidesDescription.charAt(5);
-        bottom[2] = sidesDescription.charAt(4);
-
-        // Left: read from bottom to top, sharing both corners with its neighbours.
-        left[0] = sidesDescription.charAt(0);
-        left[1] = sidesDescription.charAt(7);
-        left[2] = sidesDescription.charAt(6);
-
-        char mid = this.midDescription.isEmpty() ? '\0' : this.midDescription.charAt(0);
-        horizontalMid[0] = left[1];
-        horizontalMid[1] = mid;
-        horizontalMid[2] = right[1];
-        verticalMid[0] = top[1];
-        verticalMid[1] = mid;
-        verticalMid[2] = bottom[1];
+        sidesDescription.getChars(0, 3, top, 0);
+        sidesDescription.getChars(3, 6, right, 0);
+        sidesDescription.getChars(6, 9, bottom, 0);
+        sidesDescription.getChars(9, 12, left, 0);
     }
 
     /**
@@ -123,8 +80,7 @@ final class Tile {
      * @return the derived tile
      */
     Tile derive(String newSidesDescription, Image newImage) {
-        return new Tile(name, newSidesDescription, midDescription,
-                false, forbidsSameNeighbor, newImage);
+        return new Tile(name, newSidesDescription, false, forbidsSameNeighbor, newImage);
     }
 
     /**
@@ -154,21 +110,12 @@ final class Tile {
     }
 
     /**
-     * Gets the eight zone description of the border.
+     * Gets the twelve zones of the sides.
      *
      * @return the border description
      */
     String getSidesDescription() {
         return sidesDescription;
-    }
-
-    /**
-     * Gets the description of the centre zone.
-     *
-     * @return the centre zone, or an empty string when the set does not overlap
-     */
-    String getMidDescription() {
-        return midDescription;
     }
 
     /**
@@ -236,37 +183,46 @@ final class Tile {
     }
 
     /**
-     * Gets the middle row of the tile, from left to right. Only meaningful for
-     * overlapping sets.
+     * Sides of a tile, the compatibility zones they expose, and the step to the
+     * neighbour across them.
      *
-     * @return the middle row zones; the returned array must not be modified
+     * <p>The constants are declared in the order the neighbours are examined on
+     * the board. That order decides which placement is tried first and which
+     * domains are cleared first, so it is part of what makes a seed reproduce
+     * the same board; do not reorder them.</p>
      */
-    char[] getHorizontalMid() {
-        return horizontalMid;
-    }
-
-    /**
-     * Gets the middle column of the tile, from top to bottom. Only meaningful
-     * for overlapping sets.
-     *
-     * @return the middle column zones; the returned array must not be modified
-     */
-    char[] getVerticalMid() {
-        return verticalMid;
-    }
-
-    /** Sides of a tile and their rows or columns used to check compatibility. */
     enum Side {
-        TOP, RIGHT, BOTTOM, LEFT;
+        TOP(0, -1),
+        BOTTOM(0, 1),
+        LEFT(-1, 0),
+        RIGHT(1, 0);
 
         static final Side[] ALL = values();
+
+        private final int dx;
+        private final int dy;
+
+        Side(int dx, int dy) {
+            this.dx = dx;
+            this.dy = dy;
+        }
+
+        /** How many columns to move to reach the neighbour across this side. */
+        int dx() {
+            return dx;
+        }
+
+        /** How many rows to move to reach the neighbour across this side. */
+        int dy() {
+            return dy;
+        }
 
         Side opposite() {
             return switch (this) {
                 case TOP -> BOTTOM;
-                case RIGHT -> LEFT;
                 case BOTTOM -> TOP;
                 case LEFT -> RIGHT;
+                case RIGHT -> LEFT;
             };
         }
 
@@ -276,13 +232,6 @@ final class Tile {
                 case RIGHT -> tile.getRight();
                 case BOTTOM -> tile.getBottom();
                 case LEFT -> tile.getLeft();
-            };
-        }
-
-        char[] midOf(Tile tile) {
-            return switch (this) {
-                case TOP, BOTTOM -> tile.getHorizontalMid();
-                case RIGHT, LEFT -> tile.getVerticalMid();
             };
         }
     }

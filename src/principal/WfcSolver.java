@@ -190,22 +190,32 @@ final class WfcSolver {
         }
     }
 
-    /**
-     * Seeds the board with a single tile: a bottom tile for sets that need it,
-     * a random one in the centre of the board otherwise.
+        /**
+     * Seeds the board. If the set starts from bottom, the entire bottom row
+     * is filled with bottom tiles. Otherwise, a single tile is placed in the
+     * centre (or bottom-left for overlapping sets).
      */
     private void placeInitialTile(TileBoard board, Random random) {
         TileSet set = board.getSet();
         boolean startsFromBottom = set.startsFromBottom();
-        int tileIndex = startsFromBottom
-                ? set.randomBottomTileIndex(random)
-                : set.randomTileIndex(random);
-        TileBoard.Point at = startsFromBottom
-                ? new TileBoard.Point(0, board.getHeight() - 1)
-                : board.getMiddle();
 
-        board.place(at.x(), at.y(), tileIndex);
-        listener.tilePlaced(at.x(), at.y(), tileIndex, set);
+        if (startsFromBottom) {
+            // Seed the entire bottom row for 'fromBottom' sets (both overlapping and not)
+            int bottomRow = board.getHeight() - 1;
+            for (int x = 0; x < board.getWidth(); x++) {
+                int tileIndex = set.randomBottomTileIndex(random);
+                board.place(x, bottomRow, tileIndex);
+                listener.tilePlaced(x, bottomRow, tileIndex, set);
+            }
+        } else {
+            // Standard seeding: one tile in the middle (or bottom-left for overlap)
+            int tileIndex = set.randomTileIndex(random);
+            TileBoard.Point at = set.usesOverlap()
+                    ? new TileBoard.Point(0, board.getHeight() - 1)
+                    : board.getMiddle();
+            board.place(at.x(), at.y(), tileIndex);
+            listener.tilePlaced(at.x(), at.y(), tileIndex, set);
+        }
     }
 
     /**
@@ -224,7 +234,7 @@ final class WfcSolver {
                 return board.isComplete();
             }
 
-            List<TileBoard.Placement> options =
+            TileBoard.PlacementOptions options =
                     board.getPossiblePlacements(anchor.x(), anchor.y(), random);
 
             if (options.isEmpty()) {
@@ -342,12 +352,11 @@ final class WfcSolver {
      */
     private static final class CollapseState {
 
-        private final List<TileBoard.Placement> options;
-        private int nextIndex;
+        private final TileBoard.PlacementOptions options;
         private int placedX = -1;
         private int placedY = -1;
 
-        CollapseState(List<TileBoard.Placement> options) {
+        CollapseState(TileBoard.PlacementOptions options) {
             this.options = options;
         }
 
@@ -357,7 +366,7 @@ final class WfcSolver {
          * @return the placement, or {@code null} when the state is exhausted
          */
         TileBoard.Placement nextPlacement() {
-            return nextIndex < options.size() ? options.get(nextIndex++) : null;
+            return options.next();
         }
 
         void markPlaced(int x, int y) {

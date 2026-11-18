@@ -4,9 +4,10 @@ import principal.Tile.Side;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
+import java.util.TreeSet;
 
 /**
  * The grid of tiles being generated.
@@ -82,19 +83,37 @@ final class TileBoard {
     private final int[][][] candidates;
 
     /**
-     * Buffer the domains are built in, so that rejecting a tile allocates
-     * nothing. It is created on first use: its size is the number of tiles, and
-     * asking for it here would load the set on the thread that builds the
-     * board.
+     * Live frontier: the placed cells that still have at least one empty
+     * neighbour, i.e. exactly the cells the anchor can be chosen from. It is
+     * kept in sync by {@link #writeCell(int, int, int)} for the written cell and
+     * its four neighbours, so the solver no longer has to sweep the whole board
+     * every step to rediscover them. The set is ordered column-major (x, then y)
+     * so iterating it visits the frontier in the very same order the full scan
+     * used to, which preserves the RNG draw sequence and the reproduced board.
      */
-    private int[] scratch;
+    private final TreeSet<Point> frontier;
 
-    /** Lists and neighbours reused when intersecting the options of a domain. */
-    private final List<List<Integer>> neighborCandidates =
-            new ArrayList<>(Collections.nCopies(Direction.ALL.length, null));
-    private final Tile[] neighborTiles = new Tile[Direction.ALL.length];
+    /** Column-major order that mirrors the old {@code for x / for y} scan. */
+    private static final Comparator<Point> COLUMN_MAJOR =
+            Comparator.comparingInt(Point::x).thenComparingInt(Point::y);
 
     private int placedCount;
+
+    /**
+     * Reusable scratch that {@link #computeDomain(int, int)} accumulates the
+     * domain in, sized to the tile set on first use. Seeding copies the first
+     * neighbour's options here and later neighbours narrow it in place, so
+     * building a domain allocates only the final array the cell caches. It is
+     * never leaked out: the cached domain is a trimmed copy.
+     */
+    private int[] domainBuffer;
+
+    /**
+     * Names that an adjacent placed tile forbids repeating, gathered by
+     * {@link #computeDomain(int, int)} on every call and read back by
+     * {@link #filterDomain(int)}. At most one per neighbour.
+     */
+    private final String[] forbiddenNames = new String[Side.ALL.length];
 
     /**
      * Creates an empty board.
@@ -117,6 +136,7 @@ final class TileBoard {
             Arrays.fill(column, EMPTY);
         }
         this.candidates = new int[width][height][];
+        this.frontier = new TreeSet<>(COLUMN_MAJOR);
     }
 
     /**
@@ -204,8 +224,10 @@ final class TileBoard {
      * @param x         column
      * @param y         row
      * @param tileIndex index of the tile in the {@link TileSet}
-     * @throws IllegalArgumentException if the position is outside the board or
-     *                                  the tile index does not exist
+     * @throws IllegalArgumentException if the position is outside the board, the
+     *                                  tile index does not exist, or a bottom tile
+     *                                  is placed outside the bottom row of a
+     *                                  from-bottom set
      * @throws IllegalStateException    if the cell already has a tile; the
      *                                  previous content is never overwritten
      *                                  silently
@@ -214,8 +236,12 @@ final class TileBoard {
         if (!inBounds(x, y)) {
             throw new IllegalArgumentException("Position " + x + "," + y + " is outside the board");
         }
-        if (set.get(tileIndex) == null) {
+        Tile tile = set.get(tileIndex);
+        if (tile == null) {
             throw new IllegalArgumentException("Unknown tile index: " + tileIndex);
+        }
+        if (!allowsBottomAt(y) && tile.isBottomTile()) {
+            throw new IllegalArgumentException("Bottom tiles can only be placed in the bottom row");
         }
         if (cells[x][y] != EMPTY) {
             throw new IllegalStateException(
@@ -223,6 +249,11 @@ final class TileBoard {
         }
         writeCell(x, y, tileIndex);
         placedCount++;
+    }
+
+    /** Tells whether bottom tiles may be placed in the given row. */
+    private boolean allowsBottomAt(int y) {
+        return !set.startsFromBottom() || y == height - 1;
     }
 
     /**
@@ -256,12 +287,36 @@ final class TileBoard {
     private void writeCell(int x, int y, int tileIndex) {
         cells[x][y] = tileIndex;
         candidates[x][y] = null;
-        for (Direction direction : Direction.ALL) {
-            int neighborX = x + direction.dx();
-            int neighborY = y + direction.dy();
+        syncFrontierCell(x, y);
+        for (Side side : Side.ALL) {
+            int neighborX = x + side.dx();
+            int neighborY = y + side.dy();
             if (inBounds(neighborX, neighborY)) {
                 candidates[neighborX][neighborY] = null;
+                syncFrontierCell(neighborX, neighborY);
             }
+        }
+    }
+
+    /**
+     * Adds or removes a cell from the frontier so the set always holds exactly
+     * the placed cells that still touch an empty neighbour.
+     *
+     * <p>Only the written cell and its four neighbours can change membership,
+     * and their empty-neighbour status is the only thing that flipped, so this
+     * is called on just those five cells after every write. Clearing a cell
+     * flows through the same path, which is what makes backtracking re-add the
+     * neighbours whose gap came back.</p>
+     *
+     * @param x column
+     * @param y row
+     */
+    private void syncFrontierCell(int x, int y) {
+        Point cell = new Point(x, y);
+        if (cells[x][y] != EMPTY && hasEmptyNeighbor(x, y)) {
+            frontier.add(cell);
+        } else {
+            frontier.remove(cell);
         }
     }
 
@@ -282,10 +337,10 @@ final class TileBoard {
      * @return the empty neighbours, at most four
      */
     List<Point> getEmptyNeighbors(int x, int y) {
-        List<Point> neighbors = new ArrayList<>(Direction.ALL.length);
-        for (Direction direction : Direction.ALL) {
-            int neighborX = x + direction.dx();
-            int neighborY = y + direction.dy();
+        List<Point> neighbors = new ArrayList<>(Side.ALL.length);
+        for (Side side : Side.ALL) {
+            int neighborX = x + side.dx();
+            int neighborY = y + side.dy();
             if (inBounds(neighborX, neighborY) && cells[neighborX][neighborY] == EMPTY) {
                 neighbors.add(new Point(neighborX, neighborY));
             }
@@ -301,10 +356,10 @@ final class TileBoard {
      * @return the occupied neighbours, at most four
      */
     List<Point> getOccupiedNeighbors(int x, int y) {
-        List<Point> neighbors = new ArrayList<>(Direction.ALL.length);
-        for (Direction direction : Direction.ALL) {
-            int neighborX = x + direction.dx();
-            int neighborY = y + direction.dy();
+        List<Point> neighbors = new ArrayList<>(Side.ALL.length);
+        for (Side side : Side.ALL) {
+            int neighborX = x + side.dx();
+            int neighborY = y + side.dy();
             if (inBounds(neighborX, neighborY) && cells[neighborX][neighborY] != EMPTY) {
                 neighbors.add(new Point(neighborX, neighborY));
             }
@@ -313,18 +368,54 @@ final class TileBoard {
     }
 
     /**
-     * Lists every tile that can be placed in the empty cells around a tile,
-     * in random order so that the generation does not look biased.
+     * Lists every tile that can be placed in the empty cells around a tile, in a
+     * reproducible random order so that the generation does not look biased.
+     *
+     * <p>The result is a lazy view over the cached domains of the neighbours:
+     * nothing is concatenated and no placement object is built up front. Each
+     * {@link PlacementOptions#next()} resolves one option on demand from the
+     * neighbour arrays, so a step that never backtracks allocates only the single
+     * {@link Placement} it actually consumes.</p>
      *
      * @param x      column of the tile used as anchor
      * @param y      row of the tile used as anchor
      * @param random source of randomness
      * @return the possible placements, empty when the anchor cannot grow
      */
-    List<Placement> getPossiblePlacements(int x, int y, Random random) {
-        List<Placement> placements = collectPlacements(x, y);
-        Collections.shuffle(placements, random);
-        return placements;
+    PlacementOptions getPossiblePlacements(int x, int y, Random random) {
+        if (!inBounds(x, y) || cells[x][y] == EMPTY) {
+            return PlacementOptions.EMPTY;
+        }
+        int sides = Side.ALL.length;
+        int[][] domains = new int[sides][];
+        int[] targetX = new int[sides];
+        int[] targetY = new int[sides];
+        int[] starts = new int[sides + 1];
+
+        // Gather only the neighbours that still have options, keeping references
+        // to their cached arrays. starts marks the virtual offset of each array.
+        int count = 0;
+        int running = 0;
+        for (Side side : Side.ALL) {
+            int neighborX = x + side.dx();
+            int neighborY = y + side.dy();
+            int[] domain = domainAt(neighborX, neighborY);
+            if (domain.length == 0) {
+                continue;
+            }
+            domains[count] = domain;
+            targetX[count] = neighborX;
+            targetY[count] = neighborY;
+            starts[count] = running;
+            running += domain.length;
+            count++;
+        }
+        if (count == 0) {
+            return PlacementOptions.EMPTY;
+        }
+        starts[count] = running;
+        return new PlacementOptions(domains, targetX, targetY, starts, running,
+                shuffledRange(running, random));
     }
 
     /**
@@ -343,8 +434,8 @@ final class TileBoard {
             return 0;
         }
         int count = 0;
-        for (Direction direction : Direction.ALL) {
-            count += domainAt(x + direction.dx(), y + direction.dy()).length;
+        for (Side side : Side.ALL) {
+            count += domainAt(x + side.dx(), y + side.dy()).length;
         }
         return count;
     }
@@ -366,30 +457,31 @@ final class TileBoard {
         int lowest = Integer.MAX_VALUE;
         int ties = 0;
 
-        for (int x = 0; x < width; x++) {
-            for (int y = 0; y < height; y++) {
-                if (cells[x][y] == EMPTY || !hasEmptyNeighbor(x, y)) {
-                    continue;
+        // The frontier already holds exactly the placed cells with an empty
+        // neighbour, in column-major order, so this replaces the whole-board
+        // sweep with a pass over the few cells that can actually be the anchor.
+        for (Point cell : frontier) {
+            int options = countPossiblePlacements(cell.x(), cell.y());
+            if (options < lowest ) {
+                lowest = options;
+                best = cell;
+                ties = 1;
+                if (options == 1) {
+                    // Forced cell: nothing can score lower, no need to keep scanning.
+                    return cell;
                 }
-
-                int options = countPossiblePlacements(x, y);
-                if (options < lowest) {
-                    lowest = options;
-                    best = new Point(x, y);
-                    ties = 1;
-                } else if (options == lowest && random.nextInt(++ties) == 0) {
-                    // Reservoir sampling: keeps every tied candidate equally likely.
-                    best = new Point(x, y);
-                }
+            } else if (options == lowest && random.nextInt(++ties) == 0) {
+                // Reservoir sampling: keeps every tied candidate equally likely.
+                best = cell;
             }
         }
         return best;
     }
 
     private boolean hasEmptyNeighbor(int x, int y) {
-        for (Direction direction : Direction.ALL) {
-            int neighborX = x + direction.dx();
-            int neighborY = y + direction.dy();
+        for (Side side : Side.ALL) {
+            int neighborX = x + side.dx();
+            int neighborY = y + side.dy();
             if (inBounds(neighborX, neighborY) && cells[neighborX][neighborY] == EMPTY) {
                 return true;
             }
@@ -397,30 +489,97 @@ final class TileBoard {
         return false;
     }
 
-    private List<Placement> collectPlacements(int x, int y) {
-        if (!inBounds(x, y) || cells[x][y] == EMPTY) {
-            return new ArrayList<>();
+    /**
+     * Builds a random permutation of {@code 0..size-1} with Fisher-Yates, so the
+     * options are visited in a reproducible shuffled order without ever moving
+     * the domain arrays themselves.
+     *
+     * @param size   number of slots to permute
+     * @param random source of randomness
+     * @return the shuffled visit order
+     */
+    private static int[] shuffledRange(int size, Random random) {
+        int[] order = new int[size];
+        for (int i = 0; i < size; i++) {
+            order[i] = i;
+        }
+        for (int i = size - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            int swap = order[i];
+            order[i] = order[j];
+            order[j] = swap;
+        }
+        return order;
+    }
+
+    /**
+     * A lazy, shuffled view over the domains of the empty neighbours of one
+     * anchor. The neighbour option arrays are referenced, not concatenated, and
+     * {@code starts} marks where each array would begin in a virtual flat list.
+     * {@link #next()} consumes the pre-shuffled {@code order} and materialises a
+     * single {@link Placement} per call, so building the options costs no
+     * per-option allocation and the RNG is only touched once per anchor.
+     */
+    static final class PlacementOptions {
+
+        /** Shared empty result for an anchor that cannot grow at all. */
+        static final PlacementOptions EMPTY = new PlacementOptions(
+                new int[0][], new int[0], new int[0], new int[1], 0, new int[0]);
+
+        private final int[][] domains;
+        private final int[] targetX;
+        private final int[] targetY;
+        private final int[] starts;
+        private final int total;
+        private final int[] order;
+        private int cursor;
+
+        PlacementOptions(int[][] domains, int[] targetX, int[] targetY, int[] starts,
+                         int total, int[] order) {
+            this.domains = domains;
+            this.targetX = targetX;
+            this.targetY = targetY;
+            this.starts = starts;
+            this.total = total;
+            this.order = order;
         }
 
-        // The domains already know how many placements there will be, so the
-        // list is created with its final size and never grows.
-        List<Placement> placements = new ArrayList<>(countPossiblePlacements(x, y));
-        for (Direction direction : Direction.ALL) {
-            int targetX = x + direction.dx();
-            int targetY = y + direction.dy();
-            for (int tileIndex : domainAt(targetX, targetY)) {
-                placements.add(new Placement(tileIndex, targetX, targetY));
-            }
+        /** Tells whether the anchor has no way to grow. */
+        boolean isEmpty() {
+            return total == 0;
         }
-        return placements;
+
+        /** Gets how many placements the anchor can still make. */
+        int size() {
+            return total;
+        }
+
+        /**
+         * Resolves the next option in shuffled order, mapping the flat slot to
+         * its neighbour array and offset on the fly.
+         *
+         * @return the placement, or {@code null} when every option was consumed
+         */
+        Placement next() {
+            if (cursor >= total) {
+                return null;
+            }
+            int slot = order[cursor++];
+            int side = 0;
+            while (starts[side + 1] <= slot) {
+                side++;
+            }
+            int tileIndex = domains[side][slot - starts[side]];
+            return new Placement(tileIndex, targetX[side], targetY[side]);
+        }
     }
 
     /**
      * Gets the tiles that can go into a cell, computing them the first time they
      * are asked for.
      *
-     * <p>A domain is a function of the tiles placed around the cell and of
-     * nothing else, so throwing it away is always safe: it is rebuilt from the
+     * <p>A domain depends on the cell's fixed position and the tiles placed
+     * around it, so throwing it away is always safe: it is rebuilt from the
      * board when it is needed again, with exactly the value it would have had if
      * it had been kept up to date.</p>
      *
@@ -442,55 +601,134 @@ final class TileBoard {
     }
 
     /**
-     * Computes the domain by intersecting the indexed lists of the neighbours.
-     * Preserves the set order and applies the rule on neighbour names.
+     * Computes the domain of a cell by merging the ascending option lists of its
+     * placed neighbours. Intersecting ascending arrays keeps the result
+     * ascending, so it preserves the order of the set and a seed reproduces the
+     * same board. The neighbour-name rule is applied last, because the side index
+     * cannot express it. Bottom tiles need no positional check here: they carry no
+     * entry under the neighbour-facing {@code TOP} side, so the index only ever
+     * offers them for the last row, where {@code place} also accepts them.
      *
      * @param x column
      * @param y row
      * @return compatible tiles, ordered as in the set
      */
     private int[] computeDomain(int x, int y) {
-        if (scratch == null) {
-            scratch = new int[set.size()];
+        if (domainBuffer == null) {
+            domainBuffer = new int[set.size()];
         }
-        int neighborCount = 0;
-        List<Integer> fewest = null;
-        for (Direction direction : Direction.ALL) {
-            Tile neighbor = tileAt(x + direction.dx(), y + direction.dy());
+        // Mark the ban list empty; only the stop marker matters, the tail is junk.
+        forbiddenNames[0] = null;
+        int size = 0;
+        int forbidden = 0;
+        boolean seeded = false;
+        for (Side side : Side.ALL) {
+            Tile neighbor = tileAt(x + side.dx(), y + side.dy());
             if (neighbor == null) {
                 continue;
             }
-            List<Integer> options = set.compatibleTiles(direction.ownSide(), neighbor);
-            if (options.isEmpty()) {
+            // A placed tile that forbids its own name bans every tile sharing it.
+            if (neighbor.forbidsSameNeighbor()) {
+                forbiddenNames[forbidden++] = neighbor.getName();
+                if (forbidden < forbiddenNames.length) {
+                    // Keep the next slot as the stop marker the filter scans for.
+                    forbiddenNames[forbidden] = null;
+                }
+            }
+            Side facing = side.opposite();
+            String signature = new String(facing.zonesOf(neighbor));
+            int[] options = set.compatibleTiles(facing, signature);
+            if (options.length == 0) {
                 return NO_TILES;
             }
-            neighborCandidates.set(neighborCount, options);
-            neighborTiles[neighborCount++] = neighbor;
-            if (fewest == null || options.size() < fewest.size()) {
-                fewest = options;
+            // The first neighbour fills the buffer, the rest narrow it in place.
+            size = seeded ? intersectInto(size, options) : fill(options);
+            seeded = true;
+            if (size == 0) {
+                return NO_TILES;
             }
         }
+        if (!seeded) {
+            // An isolated cell simply takes every tile the set holds.
+            size = fill(set.allTileIndices());
+        }
+        return filterDomain(size);
+    }
 
-        int compatible = 0;
-        if (fewest == null) {
-            for (int i = 0; i < scratch.length; i++) {
-                scratch[compatible++] = i;
-            }
-        } else {
-            candidates:
-            for (int tileIndex : fewest) {
-                Tile tile = set.get(tileIndex);
-                for (int i = 0; i < neighborCount; i++) {
-                    List<Integer> options = neighborCandidates.get(i);
-                    if ((options != fewest && Collections.binarySearch(options, tileIndex) < 0)
-                            || sameNameConflict(tile, neighborTiles[i])) {
-                        continue candidates;
-                    }
-                }
-                scratch[compatible++] = tileIndex;
+    /**
+     * Copies an ascending option list into {@link #domainBuffer} as the starting
+     * domain.
+     *
+     * @param source ascending values to seed with
+     * @return the number of values now in the buffer
+     */
+    private int fill(int[] source) {
+        System.arraycopy(source, 0, domainBuffer, 0, source.length);
+        return source.length;
+    }
+
+    /**
+     * Narrows the values held in {@link #domainBuffer}{@code [0..size)} to those
+     * also present in the ascending {@code options}, compacting in place. Overwriting
+     * the buffer is safe because it stays ascending and the write index never
+     * passes the read index, while {@code options} is a separate read-only array.
+     *
+     * @param size    live values currently in the buffer
+     * @param options ascending values to intersect with
+     * @return the number of surviving values
+     */
+    private int intersectInto(int size, int[] options) {
+        int i = 0;
+        int j = 0;
+        int kept = 0;
+        while (i < size && j < options.length) {
+            int left = domainBuffer[i];
+            int right = options[j];
+            if (left == right) {
+                domainBuffer[kept++] = left;
+                i++;
+                j++;
+            } else if (left < right) {
+                i++;
+            } else {
+                j++;
             }
         }
-        return compatible == 0 ? NO_TILES : Arrays.copyOf(scratch, compatible);
+        return kept;
+    }
+
+    /**
+     * Drops the tiles whose name an adjacent placed tile bans, keeping the order.
+     * Compacts the survivors to the front of the buffer and returns a freshly
+     * sized copy: the one array the cached domain needs.
+     */
+    private int[] filterDomain(int size) {
+        int kept = 0;
+        for (int i = 0; i < size; i++) {
+            int tileIndex = domainBuffer[i];
+            if (!nameIsForbidden(set.get(tileIndex).getName())) {
+                domainBuffer[kept++] = tileIndex;
+            }
+        }
+        return kept == 0 ? NO_TILES : Arrays.copyOf(domainBuffer, kept);
+    }
+
+    /**
+     * Tells whether a candidate name is banned by some neighbouring tile, scanning
+     * the null-terminated ban list gathered by {@link #computeDomain(int, int)}. A
+     * shared name always carries the same forbid flag, so matching the name of a
+     * forbidding neighbour is enough.
+     */
+    private boolean nameIsForbidden(String name) {
+        for (String forbidden : forbiddenNames) {
+            if (forbidden == null) {
+                break;
+            }
+            if (forbidden.equals(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Tile tileAt(int x, int y) {
@@ -499,78 +737,5 @@ final class TileBoard {
         }
         int tileIndex = cells[x][y];
         return tileIndex == EMPTY ? null : set.get(tileIndex);
-    }
-
-    /**
-     * Two tiles with the same name may not touch when the candidate forbids it.
-     */
-    private static boolean sameNameConflict(Tile tile, Tile neighbor) {
-        return tile.forbidsSameNeighbor() && neighbor.getName().equals(tile.getName());
-    }
-
-    /**
-     * A direction towards a neighbour, together with the side of the tile that
-     * faces it.
-     *
-     * <p>The constants are declared in the order the neighbours are examined. That
-     * order decides which placement is tried first and which tiles are cleared
-     * first, so it is part of what makes a seed reproduce the same board.</p>
-     */
-    private enum Direction {
-
-        /** The neighbour is above: the top side of the tile meets its bottom. */
-        UP(0, -1, Side.TOP),
-
-        /** The neighbour is below: the bottom side of the tile meets its top. */
-        DOWN(0, 1, Side.BOTTOM),
-
-        /** The neighbour is on the left: the left side meets its right. */
-        LEFT(-1, 0, Side.LEFT),
-
-        /** The neighbour is on the right: the right side meets its left. */
-        RIGHT(1, 0, Side.RIGHT);
-
-        /**
-         * The four directions, ready to iterate. It is kept because
-         * {@code values()} returns a fresh array on every call.
-         */
-        private static final Direction[] ALL = values();
-
-        private final int dx;
-        private final int dy;
-        private final Side ownSide;
-
-        Direction(int dx, int dy, Side ownSide) {
-            this.dx = dx;
-            this.dy = dy;
-            this.ownSide = ownSide;
-        }
-
-        /**
-         * Gets how many columns to move to reach the neighbour.
-         *
-         * @return the column step
-         */
-        private int dx() {
-            return dx;
-        }
-
-        /**
-         * Gets how many rows to move to reach the neighbour.
-         *
-         * @return the row step
-         */
-        private int dy() {
-            return dy;
-        }
-
-        /**
-         * Gets the side of the tile that faces the neighbour.
-         *
-         * @return the own side
-         */
-        private Side ownSide() {
-            return ownSide;
-        }
     }
 }
