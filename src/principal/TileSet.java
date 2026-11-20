@@ -153,11 +153,14 @@ enum TileSet {
     /** Sample: non overlapping windows. */
     WATER(Sampled.plain("Water")),
 
-    /** Sample: overlapping windows, seeded from the bottom row of the sample. */
+    /** Sample: non overlapping windows, seeded from the bottom row of the sample. */
     FLOWERS(Sampled.fromBottomNoOverlap("Flowers2")),
 
-    /** Sample: overlapping windows, seeded from the bottom row of the sample. */
+    /** Sample: non overlapping windows, seeded from the bottom row of the sample. */
     SKYLINE(Sampled.fromBottomNoOverlap("Skyline")),
+
+    /** Sample: non overlapping windows, seeded from the bottom row of the sample. */
+    SCALED_MAZE(Sampled.overlapping("ScaledMaze")),
 
     /** Sample: overlapping windows. */
     SIMPLE_WALL(Sampled.overlapping("SimpleWall")),
@@ -179,6 +182,14 @@ enum TileSet {
      * the whole domain a fully isolated cell starts from.
      */
     private int[] allTileIndices;
+
+    /**
+     * Ascending indices of the tiles that come from the sample's bottom row,
+     * published like {@link #allTileIndices} before the volatile write to
+     * {@link #tiles}. Empty for a set with no ground tiles, so seeding a
+     * from-bottom set picks among them without rescanning every tile each time.
+     */
+    private int[] bottomTileIndices;
 
     /**
      * The loaded tiles, or {@code null} until they are needed.
@@ -236,17 +247,11 @@ enum TileSet {
      * @return the index of a random bottom tile, or {@code -1} if the set is empty
      */
     int randomBottomTileIndex(Random random) {
-        Tile[] loaded = getTiles();
-        List<Integer> bottomTiles = new ArrayList<>();
-        for (int i = 0; i < loaded.length; i++) {
-            if (loaded[i].isBottomTile()) {
-                bottomTiles.add(i);
-            }
-        }
-        if (bottomTiles.isEmpty()) {
+        getTiles();
+        if (bottomTileIndices.length == 0) {
             return randomTileIndex(random);
         }
-        return bottomTiles.get(random.nextInt(bottomTiles.size()));
+        return bottomTileIndices[random.nextInt(bottomTileIndices.length)];
     }
 
     /**
@@ -367,6 +372,7 @@ enum TileSet {
 
         compatibleBySide = freezeIndex(index);
         allTileIndices = ascendingIndices(building.size());
+        bottomTileIndices = bottomIndices(building);
         tiles = building.toArray(Tile[]::new);
         return tiles;
     }
@@ -378,6 +384,18 @@ enum TileSet {
             indices[i] = i;
         }
         return indices;
+    }
+
+    /** Collects, ascending, the positions of the tiles flagged as bottom. */
+    private static int[] bottomIndices(List<Tile> building) {
+        int[] indices = new int[building.size()];
+        int count = 0;
+        for (int i = 0; i < building.size(); i++) {
+            if (building.get(i).isBottomTile()) {
+                indices[count++] = i;
+            }
+        }
+        return Arrays.copyOf(indices, count);
     }
 
     /**
@@ -398,6 +416,11 @@ enum TileSet {
     /**
      * Adds the mirrors and rotations of every tile already loaded.
      *
+     * <p>Ground tiles are the exception: they only ever get their horizontal
+     * mirror, so the soil border can never end up on a side or on the top.
+     * The rule is driven by the bottom flag, not by the kind of source, so it
+     * also covers the sets derived here instead of during their own loading.</p>
+     *
      * @param building list the derived tiles are added to
      * @param index    index updated when each tile is added
      * @return {@code true} if at least one distinct tile was added
@@ -410,6 +433,9 @@ enum TileSet {
         for (int i = 0; i < initialSize; i++) {
             Tile original = building.get(i);
             for (Transform transform : Transform.values()) {
+                if (original.isBottomTile() && transform != Transform.HORIZONTAL_MIRROR) {
+                    continue;
+                }
                 added |= addDerived(building, index, original, transform, palette);
             }
         }
@@ -445,26 +471,28 @@ enum TileSet {
         }
 
         addTile(building, index, original.derive(newSides, image));
+        // A mandatory mirror may repeat an existing tile: it is added, but it is
+        // not a new distinct one, so only a genuinely new tile reports true.
         return !alreadyExists;
     }
 
-        /** Adds the tile to the list and the side index in the same step. */
-        private static void addTile(List<Tile> building, Map<SideKey, List<Integer>> index, Tile tile) {
-            int position = building.size();
-            building.add(tile);
-            for (Side side : Side.ALL) {
-                // Bottom tiles (ground) cannot have neighbors BELOW them (Side.BOTTOM).
-                // They MUST allow neighbors ABOVE (Side.TOP) for flowers/grass.
-                if (tile.isBottomTile() && side == Side.BOTTOM) {
-                    continue;
-                }
-                String signature = new String(side.zonesOf(tile));
-                // Key by the neighbour's facing side (side.opposite) and the zones
-                // it must meet, since the candidate carries `signature` on its own
-                // `side`. compatibleTiles then looks this up directly.
-                index.computeIfAbsent(new SideKey(side.opposite(), signature), key -> new ArrayList<>()).add(position);
+    /** Adds the tile to the list and the side index in the same step. */
+    private static void addTile(List<Tile> building, Map<SideKey, List<Integer>> index, Tile tile) {
+        int position = building.size();
+        building.add(tile);
+        for (Side side : Side.ALL) {
+            // Bottom tiles (ground) cannot have neighbors BELOW them (Side.BOTTOM).
+            // They MUST allow neighbors ABOVE (Side.TOP) for flowers/grass.
+            if (tile.isBottomTile() && side == Side.BOTTOM) {
+                continue;
             }
+            String signature = new String(side.zonesOf(tile));
+            // Key by the neighbour's facing side (side.opposite) and the zones
+            // it must meet, since the candidate carries `signature` on its own
+            // `side`. compatibleTiles then looks this up directly.
+            index.computeIfAbsent(new SideKey(side.opposite(), signature), key -> new ArrayList<>()).add(position);
         }
+    }
 
     /**
      * Finds an equivalent description. Non-overlapping samples also compare the
@@ -716,17 +744,7 @@ enum TileSet {
         }
 
         /**
-         * An overlapping sample whose generation is seeded from its bottom row.
-         *
-         * @param sampleName name of the sample image, without extension
-         * @return the description of that set
-         */
-        private static Sampled fromBottom(String sampleName) {
-            return new Sampled(sampleName, TILESIZE, true, true);
-        }
-
-        /**
-         * An overlapping sample whose generation is seeded from its bottom row.
+         * A non overlapping sample whose generation is seeded from its bottom row.
          *
          * @param sampleName name of the sample image, without extension
          * @return the description of that set
@@ -748,27 +766,29 @@ enum TileSet {
 
             if (usesOverlap) {
                 loadOverlappingTiles(building, index, palette, reader, width, height);
-                return;
+            } else {
+                loadPlainTiles(building, index, palette, reader, width, height);
             }
+        }
 
-                        for (int y = 0; y + tileSize <= height; y++) {
+        /**
+         * Cuts every non overlapping window out of the sample, skipping the ones
+         * whose sides already exist, and flags the windows of the last row as
+         * ground when the set is seeded from the bottom.
+         */
+        private void loadPlainTiles(List<Tile> building, Map<SideKey, List<Integer>> index,
+                                    Palette palette, PixelReader reader, int width, int height) {
+            for (int y = 0; y + tileSize <= height; y++) {
                 for (int x = 0; x + tileSize <= width; x++) {
                     WritableImage pattern = TileImageOps.copyRegion(reader, x, y, tileSize);
-                    PixelReader patternReader = pattern.getPixelReader();
-                    String sides = describeSides(palette, patternReader, tileSize, usesOverlap);
-                    Tile existing = findMatchingTile(building, sides, null, pattern);
-                    if (existing != null) {
+                    String sides = describeSides(palette, pattern.getPixelReader(), tileSize, false);
+                    if (findMatchingTile(building, sides, null, pattern) != null) {
                         continue;
                     }
-
-                    Tile tile = new Tile(folderName + "_" + x + "_" + y,
-                            sides, false, false, pattern);
-
-                    // If the set is configured to start from bottom, mark tiles from the last row of the sample as bottom tiles
+                    Tile tile = new Tile(folderName + "_" + x + "_" + y, sides, false, false, pattern);
                     if (startsFromBottom && y == height - tileSize) {
                         tile.markAsBottomTile();
                     }
-
                     addTile(building, index, tile);
                 }
             }
@@ -777,52 +797,47 @@ enum TileSet {
         /** Generates the permitted symmetries of every window, including duplicates. */
         private void loadOverlappingTiles(List<Tile> building, Map<SideKey, List<Integer>> index,
                                           Palette palette, PixelReader reader, int width, int height) {
-            record SampleWindow(Tile tile, boolean bottomRow) { }
-            List<SampleWindow> originals = new ArrayList<>();
+            List<Tile> originals = new ArrayList<>();
             Map<String, Tile> bySignature = new HashMap<>();
             for (int y = 0; y + tileSize <= height; y++) {
                 for (int x = 0; x + tileSize <= width; x++) {
                     Image image = TileImageOps.copyRegion(reader, x, y, tileSize);
                     String sides = describeSides(palette, image.getPixelReader(), tileSize, true);
                     Tile original = new Tile(folderName + "_" + x + "_" + y, sides, false, false, image);
-                    boolean bottomRow = y == height - tileSize;
-                    if (bottomRow) {
+                    if (startsFromBottom && y == height - tileSize) {
                         original.markAsBottomTile();
                     }
-                    originals.add(new SampleWindow(original, bottomRow));
+                    originals.add(original);
                     addOverlappingTile(original, building, index, bySignature);
                 }
             }
 
             // Even if two originals share a signature, their mirrors may differ.
-            for (SampleWindow window : originals) {
-                Tile original = window.tile();
+            for (Tile original : originals) {
                 Image image = original.getImage();
                 Image mirrored = TileImageOps.mirrorHorizontally(image);
-                if (startsFromBottom && window.bottomRow()) {
-                    addOverlappingVariant(original, mirrored, true, building, index, palette, bySignature);
+                if (original.isBottomTile()) {
+                    // Ground tiles are only mirrored, never rotated or flipped.
+                    addOverlappingVariant(original, mirrored, building, index, palette, bySignature);
                     continue;
                 }
                 for (int turns = 0; turns < 4; turns++) {
                     if (turns > 0) {
                         addOverlappingVariant(original, TileImageOps.rotateClockwise(image, turns),
-                                false, building, index, palette, bySignature);
+                                building, index, palette, bySignature);
                     }
                     addOverlappingVariant(original, TileImageOps.rotateClockwise(mirrored, turns),
-                            false, building, index, palette, bySignature);
+                            building, index, palette, bySignature);
                 }
             }
         }
 
-        private void addOverlappingVariant(Tile original, Image image, boolean bottomTile, List<Tile> building,
+        private void addOverlappingVariant(Tile original, Image image, List<Tile> building,
                                            Map<SideKey, List<Integer>> index, Palette palette,
                                            Map<String, Tile> bySignature) {
             String sides = describeSides(palette, image.getPixelReader(), tileSize, true);
-            Tile variant = original.derive(sides, image);
-            if (bottomTile) {
-                variant.markAsBottomTile();
-            }
-            addOverlappingTile(variant, building, index, bySignature);
+            // derive keeps the bottom flag, so ground variants stay protected.
+            addOverlappingTile(original.derive(sides, image), building, index, bySignature);
         }
 
         private static void addOverlappingTile(Tile tile, List<Tile> building,

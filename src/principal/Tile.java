@@ -16,8 +16,9 @@ import javafx.scene.image.Image;
  * loading their graphics is the job of {@link TileSet}.</p>
  *
  * <p>The only piece of mutable state is the {@linkplain #isBottomTile() bottom}
- * flag, which is set while a set is loaded and is only used to seed the
- * generation of overlapping sets.</p>
+ * flag, which marks the ground tiles of a from-bottom set. It is set while the
+ * set is loaded, is inherited by the derived variants, and guards both the
+ * side index and the bottom-row placement rule.</p>
  */
 final class Tile {
 
@@ -73,14 +74,20 @@ final class Tile {
     /**
      * Creates a copy of this tile with a new border and a new graphic, used to
      * build the rotated and mirrored versions. The derived tile is no longer
-     * flagged as "force horizontal mirror".
+     * flagged as "force horizontal mirror", but it keeps the bottom flag: every
+     * variant of a ground tile must stay protected by the side index and by the
+     * bottom-row placement rule.
      *
      * @param newSidesDescription border of the derived tile
      * @param newImage            graphic of the derived tile, already transformed
      * @return the derived tile
      */
     Tile derive(String newSidesDescription, Image newImage) {
-        return new Tile(name, newSidesDescription, false, forbidsSameNeighbor, newImage);
+        Tile derived = new Tile(name, newSidesDescription, false, forbidsSameNeighbor, newImage);
+        if (bottomTile) {
+            derived.markAsBottomTile();
+        }
+        return derived;
     }
 
     /**

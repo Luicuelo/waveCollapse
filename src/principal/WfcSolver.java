@@ -1,6 +1,7 @@
 package principal;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
@@ -59,12 +60,18 @@ final class WfcSolver {
         /**
          * Called after a tile has been removed.
          *
-         * @param x         column
-         * @param y         row
-         * @param tileIndex index the removed tile had in the set
-         * @param set       tile set the index belongs to
+         * @param x   column
+         * @param y   row
+         * @param set tile set of the board the tile was removed from
          */
-        void tileRemoved(int x, int y, int tileIndex, TileSet set);
+        void tileRemoved(int x, int y, TileSet set);
+
+        /**
+         * Called once when the generation is over, whether the board was
+         * completed or not. A run that was abandoned or replaced never calls
+         * it, so listeners can safely assume they are still the current ones.
+         */
+        void generationFinished();
     }
 
     /** Maximum number of remembered decisions; older ones are discarded. */
@@ -80,6 +87,15 @@ final class WfcSolver {
     private final AtomicLong generation = new AtomicLong();
     private Future<?> running;
     private long seed;
+
+    /**
+     * Pacing flag of the generation in progress. It is volatile because the
+     * user interface thread may raise it through {@link #setFast} while the
+     * solver thread reads it on every step. It only gates the watching delay,
+     * never a random choice, so toggling it in the middle of a generation
+     * does not change the board it produces.
+     */
+    private volatile boolean fast;
 
     /**
      * Listener of the generation in progress. It is assigned at the beginning
@@ -111,6 +127,18 @@ final class WfcSolver {
     }
 
     /**
+     * Changes the pacing of the generation in progress without restarting it.
+     * The solver notices on its next step: from there on it stops (or resumes)
+     * the per-step watching delay, keeping the board, the backtracking history
+     * and the random sequence untouched.
+     *
+     * @param fast when {@code true} the steps are no longer delayed
+     */
+    void setFast(boolean fast) {
+        this.fast = fast;
+    }
+
+    /**
      * Starts a new generation on the given board. The call returns immediately;
      * any generation still in progress is abandoned first.
      *
@@ -121,9 +149,11 @@ final class WfcSolver {
      *
      * @param board    the board to fill
      * @param listener listener that receives the progress of this run only
+     * @param fast     initial pacing for this generation; it can be changed
+     *                 later, mid run, with {@link #setFast}
      * @throws IllegalArgumentException if the board or the listener is {@code null}
      */
-    void solve(TileBoard board, BoardListener listener) {
+    void solve(TileBoard board, BoardListener listener, boolean fast) {
         if (board == null) {
             throw new IllegalArgumentException("Board cannot be null");
         }
@@ -131,6 +161,7 @@ final class WfcSolver {
             throw new IllegalArgumentException("Listener cannot be null");
         }
         long runId = generation.incrementAndGet();
+        this.fast = fast;
         cancelRunning();
         running = executor.submit(() -> runGeneration(board, listener, runId));
     }
@@ -170,37 +201,40 @@ final class WfcSolver {
         TileSet set = board.getSet();
         if (set.size() == 0) {
             System.err.println("No tiles available for " + set);
-            return;
-        }
-
-        Random random = new Random(seed);
-        try {
-            // Everything is inside the try block: if anything fails, the
-            // executor simply moves on to the next generation instead of
-            // leaving the solver in a half dead state.
-            placeInitialTile(board, random);
-            boolean collapsed = collapse(board, random, runId);
-            if (!isStale(runId)) {
-                System.out.println(collapsed
-                        ? "Generation finished: board collapsed."
-                        : "Generation finished: no solution found.");
+        } else {
+            Random random = new Random(seed);
+            try {
+                // Everything is inside the try block: if anything fails, the
+                // executor simply moves on to the next generation instead of
+                // leaving the solver in a half dead state.
+                placeInitialTile(board, random);
+                boolean collapsed = collapse(board, random, runId);
+                if (!isStale(runId)) {
+                    System.out.println(collapsed
+                            ? "Generation finished: board collapsed."
+                            : "Generation finished: no solution found.");
+                }
+            } catch (RuntimeException e) {
+                System.err.println("Generation aborted: " + e);
             }
-        } catch (RuntimeException e) {
-            System.err.println("Generation aborted: " + e);
+        }
+        if (!isStale(runId)) {
+            listener.generationFinished();
         }
     }
 
-        /**
+    /**
      * Seeds the board. If the set starts from bottom, the entire bottom row
-     * is filled with bottom tiles. Otherwise, a single tile is placed in the
-     * centre (or bottom-left for overlapping sets).
+     * is filled with bottom tiles, growing from the bottom-left corner. For any
+     * other set the floor rules do not apply, so a single random tile is placed
+     * in the centre.
      */
     private void placeInitialTile(TileBoard board, Random random) {
         TileSet set = board.getSet();
         boolean startsFromBottom = set.startsFromBottom();
 
         if (startsFromBottom) {
-            // Seed the entire bottom row for 'fromBottom' sets (both overlapping and not)
+            // Seed the entire bottom row for 'fromBottom' sets
             int bottomRow = board.getHeight() - 1;
             for (int x = 0; x < board.getWidth(); x++) {
                 int tileIndex = set.randomBottomTileIndex(random);
@@ -208,11 +242,9 @@ final class WfcSolver {
                 listener.tilePlaced(x, bottomRow, tileIndex, set);
             }
         } else {
-            // Standard seeding: one tile in the middle (or bottom-left for overlap)
+            // Standard seeding: one tile in the middle
             int tileIndex = set.randomTileIndex(random);
-            TileBoard.Point at = set.usesOverlap()
-                    ? new TileBoard.Point(0, board.getHeight() - 1)
-                    : board.getMiddle();
+            TileBoard.Point at = board.getMiddle();
             board.place(at.x(), at.y(), tileIndex);
             listener.tilePlaced(at.x(), at.y(), tileIndex, set);
         }
@@ -225,7 +257,7 @@ final class WfcSolver {
      *         history was exhausted or the run was abandoned
      */
     private boolean collapse(TileBoard board, Random random, long runId) {
-        Deque<CollapseState> stack = new ArrayDeque<>();
+        Deque<TileBoard.Options> stack = new ArrayDeque<>();
         Map<TileBoard.Point, Integer> stuckCounts = new HashMap<>();
 
         while (!isStale(runId)) {
@@ -234,7 +266,7 @@ final class WfcSolver {
                 return board.isComplete();
             }
 
-            TileBoard.PlacementOptions options =
+            TileBoard.Options options =
                     board.getPossiblePlacements(anchor.x(), anchor.y(), random);
 
             if (options.isEmpty()) {
@@ -243,22 +275,22 @@ final class WfcSolver {
                     return false;
                 }
             } else {
-                CollapseState state = new CollapseState(options);
-                TileBoard.Placement first = state.nextPlacement();
-                place(board, first);
-                state.markPlaced(first.x(), first.y());
+                options.next();
+                place(board, options);
 
                 if (stack.size() >= MAX_BACKTRACK_STATES) {
                     stack.pollFirst();
                 }
-                stack.addLast(state);
+                stack.addLast(options);
             }
 
-            try {
-                Thread.sleep(STEP_DELAY_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
+            if (!fast) {
+                try {
+                    Thread.sleep(STEP_DELAY_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
             }
         }
         return false;
@@ -270,24 +302,31 @@ final class WfcSolver {
      */
     private void resolveContradiction(TileBoard board, TileBoard.Point anchor,
                                       Map<TileBoard.Point, Integer> stuckCounts, Random random) {
-        for (TileBoard.Point empty : board.getEmptyNeighbors(anchor.x(), anchor.y())) {
-            int times = stuckCounts.merge(empty, 1, Integer::sum);
+        // Snapshot the stuck cells first: the repairs below empty cells too,
+        // and only the neighbours empty at this moment may be handled.
+        List<TileBoard.Point> emptyCells = new ArrayList<>();
+        board.forEachNeighbor(anchor.x(), anchor.y(), (empty, x, y) -> {
+            if (empty) {
+                emptyCells.add(new TileBoard.Point(x, y));
+            }
+        });
+        for (TileBoard.Point cell : emptyCells) {
+            int times = stuckCounts.getOrDefault(cell, 0) + 1;
             if (times >= STUCK_LIMIT) {
-                stuckCounts.put(empty, 0);
-                clearArea(board, empty);
+                stuckCounts.remove(cell);
+                clearArea(board, cell);
             } else {
-                clearRandomNeighbor(board, empty, random);
+                stuckCounts.put(cell, times);
+                clearRandomNeighbor(board, cell, random);
             }
         }
     }
 
     private void clearRandomNeighbor(TileBoard board, TileBoard.Point around, Random random) {
-        List<TileBoard.Point> occupied = board.getOccupiedNeighbors(around.x(), around.y());
-        if (occupied.isEmpty()) {
-            return;
+        TileBoard.Point victim = board.randomOccupiedNeighbor(around.x(), around.y(), random);
+        if (victim != null) {
+            clearTile(board, victim.x(), victim.y());
         }
-        TileBoard.Point victim = occupied.get(random.nextInt(occupied.size()));
-        clearTile(board, victim.x(), victim.y());
     }
 
     private void clearArea(TileBoard board, TileBoard.Point center) {
@@ -308,30 +347,27 @@ final class WfcSolver {
      * @return {@code true} if a decision could be replayed, {@code false} if the
      *         history is exhausted (no solution from this state)
      */
-    private boolean replayLastDecision(TileBoard board, Deque<CollapseState> stack) {
+    private boolean replayLastDecision(TileBoard board, Deque<TileBoard.Options> stack) {
         while (!stack.isEmpty()) {
-            CollapseState state = stack.pollLast();
-            if (state.hasPlacedTile()) {
-                clearTile(board, state.placedX(), state.placedY());
-            }
+            TileBoard.Options options = stack.pollLast();
+            // Undo the placement this decision made last, if it survived there.
+            clearTile(board, options.x(), options.y());
 
-            TileBoard.Placement option;
-            while ((option = state.nextPlacement()) != null) {
-                if (!board.isEmpty(option.x(), option.y())) {
+            while (options.next()) {
+                if (!board.isEmpty(options.x(), options.y())) {
                     continue;
                 }
-                place(board, option);
-                state.markPlaced(option.x(), option.y());
-                stack.addLast(state);
+                place(board, options);
+                stack.addLast(options);
                 return true;
             }
         }
         return false;
     }
 
-    private void place(TileBoard board, TileBoard.Placement placement) {
-        board.place(placement.x(), placement.y(), placement.tileIndex());
-        listener.tilePlaced(placement.x(), placement.y(), placement.tileIndex(), board.getSet());
+    private void place(TileBoard board, TileBoard.Options options) {
+        board.place(options.x(), options.y(), options.tileIndex());
+        listener.tilePlaced(options.x(), options.y(), options.tileIndex(), board.getSet());
     }
 
     private void clearTile(TileBoard board, int x, int y) {
@@ -343,47 +379,6 @@ final class WfcSolver {
             return;
         }
         board.clear(x, y);
-        listener.tileRemoved(x, y, tileIndex, board.getSet());
-    }
-
-    /**
-     * A decision taken by the solver: the candidate placements that were
-     * available and the cell that was finally filled.
-     */
-    private static final class CollapseState {
-
-        private final TileBoard.PlacementOptions options;
-        private int placedX = -1;
-        private int placedY = -1;
-
-        CollapseState(TileBoard.PlacementOptions options) {
-            this.options = options;
-        }
-
-        /**
-         * Takes the next untried placement.
-         *
-         * @return the placement, or {@code null} when the state is exhausted
-         */
-        TileBoard.Placement nextPlacement() {
-            return options.next();
-        }
-
-        void markPlaced(int x, int y) {
-            this.placedX = x;
-            this.placedY = y;
-        }
-
-        boolean hasPlacedTile() {
-            return placedX >= 0 && placedY >= 0;
-        }
-
-        int placedX() {
-            return placedX;
-        }
-
-        int placedY() {
-            return placedY;
-        }
+        listener.tileRemoved(x, y, board.getSet());
     }
 }

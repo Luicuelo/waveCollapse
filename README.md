@@ -13,6 +13,9 @@ consistent, and backing out of dead ends until the whole board is filled.
 - Rotated and mirrored variants generated automatically from each base tile
 - Backtracking with a bounded history, plus area clearing when a region gets
   permanently stuck
+- Fast mode checkbox: switches the pacing in the middle of a run without
+  restarting it; the generation in progress is kept and its result is painted
+  directly, skipping the queued drawing steps
 - Reproducible patterns thanks to a configurable seed
 - Configurable canvas size, tile set and zoom, from the user interface or the
   command line
@@ -133,10 +136,10 @@ undocumented private fields.
 | `--set=<name>` | `circuit` | tile set to start with, by folder name |
 | `--seed=<long>` | random | seed of the generation |
 
-El tamaño del tablero depende del lienzo y de la distancia entre anclajes. En
-los conjuntos solapados, cada patrón de 3×3 avanza dos píxeles por celda; en los
-demás, cada celda ocupa el tamaño completo del tile. Un zoom mayor reduce el
-número de celdas.
+The board size depends on the canvas and on the distance between pattern
+anchors. In overlapping sets each 3x3 pattern advances two pixels per cell;
+in the others a cell occupies the full tile size. Higher zoom reduces the
+number of cells.
 
 Without `--seed`, every *Restart* picks a new random seed and prints it to the
 console, so any pattern you like can be reproduced later with
@@ -148,6 +151,7 @@ console, so any pattern you like can be reproduced later with
 |---|---|
 | **Restart** | throws the board away and starts a new generation |
 | **Stop** | stops the generation and discards pending drawing operations, leaving the canvas as it is |
+| **Fast mode** | removes or restores the per-step watching delay; turning it on keeps the generation in progress and draws the finished board as soon as it ends |
 | **Tile set** | loads another set and restarts |
 | **Zoom** | changes the size of a tile pixel and restarts |
 
@@ -157,7 +161,7 @@ console, so any pattern you like can be reproduced later with
 |---|---|---|
 | `circuit`, `castle`, `knots`, `simple`, `floorPlan`, `rooms`, `circles` | hand written | each tile is declared inside `TileSet` with an 8 character border description |
 | `NotKnot`, `Link`, `Knot`, `Maze`, `ColoredCity`, `City`, `Water` | sampled | every 3x3 window of the sample becomes a tile |
-| `Flowers`, `Skyline`, `SimpleWall`, `Paths` | sampled, overlapping | patrones 3×3 con anclajes separados dos píxeles; `Flowers` y `Skyline` comienzan con un tile de la fila inferior de la muestra |
+| `Flowers`, `Skyline`, `SimpleWall`, `Paths` | sampled, overlapping | 3x3 windows whose anchors are two pixels apart; `Flowers` and `Skyline` begin with a tile from the bottom row of the sample |
 
 A set knows both where its graphics live and which tiles it is made of, so the
 list above is the whole content of `TileSet`. The tiles are read the first time
@@ -180,16 +184,16 @@ left-right mirror, which also counts as a bottom tile.
 
 ## How a tile is described
 
-Cada tile tiene cuatro lados de tres zonas, descritos internamente como
-`TTTRRRBBBLLL`. Los lados horizontales se leen de izquierda a derecha y los
-verticales de arriba abajo. Dos tiles son compatibles cuando coinciden sus
-lados enfrentados.
+Every tile has four sides of three zones each, described internally as
+`TTTRRRBBBLLL`. Horizontal sides are read from left to right and vertical
+sides from top to bottom. Two tiles are compatible when their facing sides
+are equal.
 
-En las definiciones manuales se mantienen las ocho zonas originales; al cargar
-el conjunto se amplían a los cuatro lados. En las muestras se asigna una letra a
-cada color. En las muestras solapadas se generan las variantes de cada ventana
-y se conserva un solo tile por firma; en las demás se conserva el comportamiento
-anterior. Para un patrón solapado como este:
+Hand written definitions keep the original eight zones; the sides are widened
+to the four full ones when the set is loaded. Sampled sets assign a letter to
+every color. Overlapping samples generate the variants of each window and keep
+a single tile per signature; the other sets keep the previous behaviour. For an
+overlapping pattern like this one:
 
 ```
 A B C
@@ -197,17 +201,20 @@ D E F
 G H I
 ```
 
-Los lados efectivos son `top = DEF`, `right = BEH`, `bottom = GHI` y
-`left = ADG`. Al girar o reflejar una imagen, sus lados se vuelven a leer de la
-imagen transformada. En el dibujo, los tiles superiores y los de la derecha
-prevalecen en los solapes, independientemente del orden de colocación.
+The effective sides are `top = DEF`, `right = BEH`, `bottom = GHI` and
+`left = ADG`. When an image is rotated or mirrored, its sides are read again
+from the transformed image. When drawing, the tiles above and to the right
+win over the overlaps, independently of the placement order.
 
 ## How the generation works
 
-1. Seed overlapping boards at the bottom left and other boards at the centre.
-   Choose a random tile, or a bottom-row sample tile for sets that need it.
-   For from-bottom sets, bottom tiles may only be placed in the board's bottom
-   row; other tiles are also allowed there.
+1. Seed the board. Sets that start from the bottom fill the whole bottom row
+   with random soil tiles; any other set places a single random tile in the
+   centre. Soil tiles end up confined to the bottom row by the solver itself,
+   not by a positional guard: the top border of a soil tile matches ordinary
+   tiles, but no tile has a soil border on its top side, so a soil tile placed
+   in the middle starves the cell underneath it and the deadlock handling
+   (steps 4 and 5) clears it again.
 2. Find the placed tile with the fewest legal continuations around it. Ties are
    broken at random.
 3. Collect the tiles that can be placed in its empty neighbours, respecting the
@@ -219,10 +226,13 @@ prevalecen en los solapes, independientemente del orden de colocación.
 6. Stop when the board is full, when the remembered history is exhausted, or
    when the user asks to stop.
 
-This is a greedy tile placer with backtracking rather than the canonical Wave
-Function Collapse: there is no per-cell domain of possible tiles and no
-constraint propagation, which is why a cell can only be found impossible once
-its neighbours are already painted.
+This is a pragmatic Wave Function Collapse rather than the canonical one: each
+empty cell keeps a domain of fitting tiles (cached, and dropped and rebuilt
+whenever a neighbour changes), but domains are only built from neighbours that
+are already placed, so constraints never propagate through undecided cells.
+A cell can therefore only be found impossible once its neighbours are painted,
+and, because the history is bounded, "no solution found" is a memory limit and
+not a proof: the same board usually succeeds with another seed.
 
 ## Notes on concurrency
 
@@ -247,9 +257,15 @@ its neighbours are already painted.
 
 ## Known limitations
 
-- The entropy scan recomputes every candidate for the whole board on each step,
-  so the cost grows with the square of the number of cells. Large boards (or a
-  small zoom) are noticeably slower.
+- Each step scans a live frontier of the placed cells that still touch an
+  empty one, not the whole board, and the domains around every placement are
+  rebuilt lazily on demand; boards much larger than the default (or a small
+  zoom) are still slower simply because they need many more steps.
+- Backtracking remembers only the last 300 decisions, and a region that keeps
+  failing is cleared wholesale to get unstuck. The generation is therefore
+  incomplete by design: it can miss boards a full search would find, and a
+  "no solution found" message reports a given-up search, not an impossible
+  puzzle.
 - The first time a set is used its tiles are loaded, and for the sampled sets
   that means cutting out and decoding every window of the sample image; the very
   first generation of such a set may take a moment to start. Later generations
@@ -259,4 +275,4 @@ its neighbours are already painted.
 
 ## License
 
-This project is open tilesSource and available under the MIT License.
+This project is open source and available under the MIT License.

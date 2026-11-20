@@ -7,6 +7,7 @@ import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Button;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -20,8 +21,10 @@ import java.util.Random;
  *
  * <p>A JavaFX application that grows a board of tiles in real time, starting
  * from a single tile and adding compatible neighbours until the board is full
- * or no solution is found. The window offers three controls: restart the
- * generation, stop it, and change the tile set or the zoom level.</p>
+ * or no solution is found. The window offers four controls: restart the
+ * generation, stop it, change the tile set or the zoom level, and a
+ * "Fast mode" checkbox that skips the step-by-step drawing and paints the
+ * finished board only once the solver is done.</p>
  *
  * <p>Accepted command line arguments:</p>
  *
@@ -53,6 +56,7 @@ public class WaveFunction extends Application {
     private int canvasWidth = DEFAULT_WIDTH;
     private int canvasHeight = DEFAULT_HEIGHT;
     private int pixelSize = DEFAULT_PIXEL_SIZE;
+    private boolean fastMode;
     private Long pinnedSeed;
     private TileSet activeSet = TileSet.CIRCUIT;
 
@@ -160,10 +164,30 @@ public class WaveFunction extends Application {
             restart();
         });
 
+        CheckBox fastCheck = new CheckBox("Fast mode");
+        fastCheck.setPrefHeight(BUTTON_HEIGHT);
+        fastCheck.setSelected(fastMode);
+        fastCheck.setOnAction(e -> {
+            if (fastCheck.isSelected() == fastMode) {
+                return;
+            }
+            fastMode = fastCheck.isSelected();
+            // The generation in progress is kept: Fast only changes its
+            // pacing. The solver stops delaying its steps and the drawing
+            // session drops its queued history, painting the final board in
+            // one call when the generation ends. Turning Fast off again only
+            // slows the solver back down: the session cannot resume
+            // step-by-step drawing over a canvas it stopped watching.
+            solver.setFast(fastMode);
+            if (fastMode) {
+                renderer.switchToFast();
+            }
+        });
+
         HBox controls = new HBox();
         controls.setPadding(new Insets(0, 10, 0, 0));
         controls.setSpacing(10);
-        controls.getChildren().addAll(restartButton, stopButton, setSelector, pixelSizeSelector);
+        controls.getChildren().addAll(restartButton, stopButton, setSelector, pixelSizeSelector, fastCheck);
         return controls;
     }
 
@@ -186,7 +210,8 @@ public class WaveFunction extends Application {
         solver.stop();
 
         long seed = pinnedSeed != null ? pinnedSeed : new Random().nextLong();
-        System.out.println("Restarting " + activeSet + " with seed " + seed);
+        System.out.println("Restarting " + activeSet + " with seed " + seed
+                + (fastMode ? " (fast mode)" : ""));
 
         int cell = activeSet.getCellSize() * pixelSize;
         int overlap = activeSet.usesOverlap() ? activeSet.getTileSize() * pixelSize : 0;
@@ -198,7 +223,7 @@ public class WaveFunction extends Application {
         renderer.clearCanvas();
 
         solver.setSeed(seed);
-        solver.solve(board, renderer.newSession(board));
+        solver.solve(board, renderer.newSession(board, fastMode), fastMode);
     }
 
     /** Calculates the cells needed to cover the canvas using the set's anchors. */

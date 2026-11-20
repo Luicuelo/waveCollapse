@@ -1,6 +1,7 @@
 .gitattributes
 bin/circuit/bridge.png
 /out
+/out_verify
 *.7z
 waveCollapse.iml
 /bin
