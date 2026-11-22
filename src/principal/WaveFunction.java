@@ -23,8 +23,9 @@ import java.util.Random;
  * from a single tile and adding compatible neighbours until the board is full
  * or no solution is found. The window offers four controls: restart the
  * generation, stop it, change the tile set or the zoom level, and a
- * "Fast mode" checkbox that skips the step-by-step drawing and paints the
- * finished board only once the solver is done.</p>
+ * "Fast mode" checkbox that skips the step-by-step drawing, repaints the
+ * board once a second to show progress, and paints the finished board once the
+ * solver is done.</p>
  *
  * <p>Accepted command line arguments:</p>
  *
@@ -174,10 +175,11 @@ public class WaveFunction extends Application {
             fastMode = fastCheck.isSelected();
             // The generation in progress is kept: Fast only changes its
             // pacing. The solver stops delaying its steps and the drawing
-            // session drops its queued history, painting the final board in
-            // one call when the generation ends. Turning Fast off again only
-            // slows the solver back down: the session cannot resume
-            // step-by-step drawing over a canvas it stopped watching.
+            // session drops its queued history, repainting the whole board
+            // once a second for progress until the generation ends. Turning
+            // Fast off again only slows the solver back down: the session
+            // cannot resume step-by-step drawing over a canvas it stopped
+            // watching.
             solver.setFast(fastMode);
             if (fastMode) {
                 renderer.switchToFast();

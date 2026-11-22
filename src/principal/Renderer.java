@@ -27,11 +27,16 @@ import java.util.concurrent.atomic.AtomicLong;
  * notifications from that generation. Session changes and frame updates are
  * performed on the JavaFX thread.</p>
  *
- * <p>A fast session skips the step-by-step drawing entirely: it ignores the
- * per-tile notifications and, when the solver reports the generation over,
- * paints the finished board in one go on the JavaFX thread.</p>
+ * <p>A fast session skips the step-by-step drawing: it ignores the per-tile
+ * notifications and instead repaints the whole board once a second, so a long
+ * generation still shows its progress. When the solver reports the generation
+ * over, the periodic repaint stops and the finished board is painted in one go
+ * on the JavaFX thread.</p>
  */
 final class Renderer {
+
+    /** Interval between progress repaints in fast mode, in nanoseconds. */
+    private static final long FAST_REPAINT_INTERVAL_NS = 1_000_000_000L;
 
     /**
      * A pending drawing operation.
@@ -71,6 +76,9 @@ final class Renderer {
      */
     private Session currentSession;
 
+    /** NanoTime of the last fast-mode progress repaint. */
+    private long lastFastRepaint;
+
     private int pixelSize;
     private int[][] displayedTiles;
     private int overlapOffsetY;
@@ -107,13 +115,15 @@ final class Renderer {
      *
      * @param board board whose drawing sequence will be displayed
      * @param fast  when {@code true} the session does not draw the growth step
-     *              by step; it only paints the final board once the generation
+     *              by step; it repaints the whole board once a second for
+     *              progress and paints the final board when the generation
      *              finishes
      * @return the listener the new generation has to report to
      */
     WfcSolver.BoardListener newSession(TileBoard board, boolean fast) {
         long token = resetPendingActions();
         displayedTiles = null;
+        lastFastRepaint = 0;
         overlapOffsetY = 0;
         TileSet set = board.getSet();
         if (set.usesOverlap()) {
@@ -132,15 +142,17 @@ final class Renderer {
     /**
      * Switches the session of the generation in progress to fast mode, without
      * touching the generation itself. The whole pending drawing queue is
-     * discarded and no new actions are enqueued; the tiles already painted stay
-     * on the canvas until the generation ends, when the final board is painted
-     * in one call. If the generation already ended by then, that final paint
-     * happens right here instead. The session token is deliberately kept, so
-     * the run is not invalidated. Does nothing when no session is active.
+     * discarded and no new actions are enqueued; from then on the whole board
+     * is repainted once a second for progress, and the final board is painted
+     * in one call when the generation ends. If the generation already ended by
+     * then, that final paint happens right here instead. The session token is
+     * deliberately kept, so the run is not invalidated. Does nothing when no
+     * session is active.
      */
     void switchToFast() {
         if (currentSession != null) {
             currentSession.switchToFast();
+            lastFastRepaint = 0;
         }
     }
 
@@ -181,10 +193,23 @@ final class Renderer {
     }
 
     /**
-     * Executes the next pending action, if any. Called once per frame by the
-     * animation timer.
+     * Advances the drawing one step. Called once per frame by the animation
+     * timer. In slow mode it paints the next pending action; in fast mode it
+     * repaints the whole board at most once a second for progress, and stops
+     * doing so once the solver reports the generation over.
      */
     void updateFrame() {
+        Session active = currentSession;
+        if (active != null && active.fast) {
+            if (!active.finished) {
+                long now = System.nanoTime();
+                if (now - lastFastRepaint >= FAST_REPAINT_INTERVAL_NS) {
+                    lastFastRepaint = now;
+                    paintWholeBoard(active.board, active.token);
+                }
+            }
+            return;
+        }
         TileAction action;
         while ((action = pendingActions.poll()) != null) {
             if (action.session() != session.get()) {
@@ -283,8 +308,14 @@ final class Renderer {
     }
 
     /**
-     * Paints every tile the board currently holds, in one call. Used by the
-     * fast mode, where the growth was never drawn step by step.
+     * Paints every tile the board currently holds, in one call, over a freshly
+     * cleared canvas. Used by fast mode both for the once-a-second progress
+     * repaint and for the final board.
+     *
+     * <p>The board is read while the solver may still be writing it: each cell
+     * read is atomic and the grid is never resized, so the result is a slightly
+     * torn snapshot of the progress, which is exactly what the feedback wants.
+     * The final paint runs after the solver is done, so it is consistent.</p>
      *
      * @param board board to paint
      * @param token session token the paint still belongs to
@@ -295,6 +326,14 @@ final class Renderer {
             return;
         }
         TileSet set = board.getSet();
+        // A clean full redraw: a progress repaint may cover an older snapshot,
+        // and backtracking may have emptied cells since the last one.
+        clearCanvas();
+        if (set.usesOverlap()) {
+            for (int[] column : displayedTiles) {
+                Arrays.fill(column, TileBoard.EMPTY);
+            }
+        }
         for (int x = 0; x < board.getWidth(); x++) {
             for (int y = 0; y < board.getHeight(); y++) {
                 int tileIndex = board.getTileIndex(x, y);
@@ -309,11 +348,11 @@ final class Renderer {
      * Listener of one drawing session. It only accepts the operations of the
      * generation it was created for; it is deliberately lightweight, because a
      * new one is created on every restart. A fast listener drops the per-tile
-     * notifications and paints the whole board when the generation ends. A
-     * slow listener can also be switched to fast in the middle of its
-     * generation (see {@link #switchToFast()}); the switch is one way, because
-     * the session cannot resume step-by-step drawing over a canvas it stopped
-     * watching.
+     * notifications; the renderer repaints the whole board once a second for
+     * progress and paints it finally when the generation ends. A slow listener
+     * can also be switched to fast in the middle of its generation (see
+     * {@link #switchToFast()}); the switch is one way, because the session
+     * cannot resume step-by-step drawing over a canvas it stopped watching.
      */
     private final class Session implements WfcSolver.BoardListener {
 

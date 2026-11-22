@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>collects the tiles that may be placed in its empty neighbours,</li>
  *   <li>if there are none, breaks the deadlock by clearing a neighbour (and,
  *       when the same spot keeps failing, a whole area around it) and then
- *       replays a previous decision from the state stack, and</li>
+ *       tries a different option from a previous decision, and</li>
  *   <li>otherwise places one of the candidates and remembers the decision so it
  *       can be undone later.</li>
  * </ol>
@@ -77,7 +77,7 @@ final class WfcSolver {
     /** Maximum number of remembered decisions; older ones are discarded. */
     private static final int MAX_BACKTRACK_STATES = 300;
     /** Times the same empty cell may fail before its whole area is cleared. */
-    private static final int STUCK_LIMIT = 10;
+    private static final int STUCK_LIMIT = 50;
     /** Radius of the area cleared when a cell gets permanently stuck. */
     private static final int CLEAR_RADIUS = 4;
     /** Delay between steps, so the generation can be watched. */
@@ -266,16 +266,14 @@ final class WfcSolver {
                 return board.isComplete();
             }
 
-            TileBoard.Options options =
-                    board.getPossiblePlacements(anchor.x(), anchor.y(), random);
+            TileBoard.Options options = board.newOptions(anchor.x(), anchor.y());
 
-            if (options.isEmpty()) {
+            if (!options.pickOption(random)) {
                 resolveContradiction(board, anchor, stuckCounts, random);
-                if (!replayLastDecision(board, stack)) {
+                if (!tryAnotherOption(board, stack, random)) {
                     return false;
                 }
             } else {
-                options.next();
                 place(board, options);
 
                 if (stack.size() >= MAX_BACKTRACK_STATES) {
@@ -338,25 +336,27 @@ final class WfcSolver {
     }
 
     /**
-     * Undoes the most recent decisions until one of them has an option left, and
-     * places that option.
+     * Undoes the most recent decisions until one of them has an untried option
+     * left, and places that option.
      *
-     * <p>An option whose cell was filled again by older work is skipped instead
-     * of overwriting it, so a backtrack never destroys a tile it does not own.</p>
+     * <p>The picker reads the live domains, so it only ever offers a tile that
+     * fits the current neighbours into a cell that is empty right now: there is
+     * no stale option to skip and no risk of overwriting work done elsewhere.
+     * The tried list keeps the decision from retrying the option that just
+     * failed.</p>
      *
-     * @return {@code true} if a decision could be replayed, {@code false} if the
-     *         history is exhausted (no solution from this state)
+     * @param random source used by the picker to choose among untried options
+     * @return {@code true} if a decision handed out another option,
+     *         {@code false} if the history is exhausted (no solution from this
+     *         state)
      */
-    private boolean replayLastDecision(TileBoard board, Deque<TileBoard.Options> stack) {
+    private boolean tryAnotherOption(TileBoard board, Deque<TileBoard.Options> stack, Random random) {
         while (!stack.isEmpty()) {
             TileBoard.Options options = stack.pollLast();
             // Undo the placement this decision made last, if it survived there.
             clearTile(board, options.x(), options.y());
 
-            while (options.next()) {
-                if (!board.isEmpty(options.x(), options.y())) {
-                    continue;
-                }
+            if (options.pickOption(random)) {
                 place(board, options);
                 stack.addLast(options);
                 return true;

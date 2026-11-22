@@ -2,8 +2,10 @@ package principal;
 
 import principal.Tile.Side;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Random;
 import java.util.TreeSet;
 
@@ -14,8 +16,8 @@ import java.util.TreeSet;
  * still undecided. It also answers the two questions the solver needs:</p>
  *
  * <ul>
- *   <li>which tiles can be placed next to the tiles already present
- *       ({@link #getPossiblePlacements(int, int, Random)}), and</li>
+ *   <li>which tile can be placed next to the tiles already present
+ *       ({@link Options#pickOption(Random)}), and</li>
  *   <li>where it is best to keep growing ({@link #getLowestEntropyAnchor(Random)}).</li>
  * </ul>
  *
@@ -63,12 +65,12 @@ final class TileBoard {
     private final int[][] cells;
 
     /**
-     * Domain of every cell: the tiles that can be placed in it, or {@code null}
-     * while the domain is unknown or the cell already holds a tile. It is
-     * dropped whenever the cell or one of its four orthogonal neighbours
-     * changes, and rebuilt the next time the domain is read.
+     * Cached domain of every cell: the tiles that can be placed in it, or
+     * {@code null} while the domain is unknown or the cell already holds a
+     * tile. It is dropped whenever the cell or one of its four orthogonal
+     * neighbours changes, and rebuilt the next time the domain is read.
      */
-    private final int[][][] candidates;
+    private final int[][][] cachedDomains;
 
     /**
      * Live frontier: the placed cells that still have at least one empty
@@ -121,7 +123,7 @@ final class TileBoard {
         for (int[] column : cells) {
             Arrays.fill(column, EMPTY);
         }
-        this.candidates = new int[width][height][];
+        this.cachedDomains = new int[width][height][];
         this.frontier = new TreeSet<>(COLUMN_MAJOR);
     }
 
@@ -250,13 +252,13 @@ final class TileBoard {
      */
     private void writeCell(int x, int y, int tileIndex) {
         cells[x][y] = tileIndex;
-        candidates[x][y] = null;
+        cachedDomains[x][y] = null;
         syncFrontierCell(x, y);
         for (Side side : Side.ALL) {
             int neighborX = x + side.dx();
             int neighborY = y + side.dy();
             if (inBounds(neighborX, neighborY)) {
-                candidates[neighborX][neighborY] = null;
+                cachedDomains[neighborX][neighborY] = null;
                 syncFrontierCell(neighborX, neighborY);
             }
         }
@@ -327,32 +329,14 @@ final class TileBoard {
     }
 
     /**
-     * Collects every tile that can be placed in the empty cells around an
-     * anchor, in a reproducible random order so that the generation does not
-     * look biased.
+     * Opens a decision on a placed anchor tile, with nothing tried yet.
      *
-     * <p>The build reads exactly the four cached neighbour domains and hands
-     * them to {@link Options} as references, one per side: nothing is
-     * concatenated and no per-option object is built up front.</p>
-     *
-     * @param x      column of the tile used as anchor
-     * @param y      row of the tile used as anchor
-     * @param random source used once to shuffle the visit order
-     * @return the possible placements, empty when the anchor cannot grow
+     * @param anchorX column of the anchor tile
+     * @param anchorY row of the anchor tile
+     * @return the new decision
      */
-    Options getPossiblePlacements(int x, int y, Random random) {
-        if (!inBounds(x, y) || cells[x][y] == EMPTY) {
-            return Options.EMPTY;
-        }
-        Options options = new Options(x, y);
-        for (Side side : Side.ALL) {
-            options.addDomain(side, domainAt(x + side.dx(), y + side.dy()));
-        }
-        if (options.isEmpty()) {
-            return Options.EMPTY;
-        }
-        options.shuffleVisitOrder(random);
-        return options;
+    Options newOptions(int anchorX, int anchorY) {
+        return new Options(this, anchorX, anchorY);
     }
 
     /**
@@ -403,8 +387,9 @@ final class TileBoard {
                 lowest = count;
                 best = cell;
                 ties = 1;
-                if (count == 1) {
-                    // Forced cell: nothing can score lower, no need to keep scanning.
+                if (count <= 1) {
+                    // A forced cell or a dead one: nothing can score lower,
+                    // no need to keep scanning.
                     return cell;
                 }
             } else if (count == lowest) {
@@ -473,154 +458,142 @@ final class TileBoard {
     }
 
     /**
-     * Builds a random permutation of {@code 0..size-1} with Fisher-Yates, so the
-     * options are visited in a reproducible shuffled order without ever moving
-     * the domain arrays themselves.
+     * One decision of the solver: an anchor tile and the record of what has
+     * been tried around it, kept on the backtrack stack so the decision can be
+     * undone and continued later.
      *
-     * @param size   number of slots to permute
-     * @param random source of randomness
-     * @return the shuffled visit order
-     */
-    private static int[] shuffledRange(int size, Random random) {
-        int[] order = new int[size];
-        for (int i = 0; i < size; i++) {
-            order[i] = i;
-        }
-        for (int i = size - 1; i > 0; i--) {
-            int j = random.nextInt(i + 1);
-            int swap = order[i];
-            order[i] = order[j];
-            order[j] = swap;
-        }
-        return order;
-    }
-
-    /**
-     * Everything that could be placed around one anchor when the decision was
-     * taken: the tiles its empty neighbours admit, seen as one flat list of
-     * options tried in a shuffled order.
-     *
-     * <p>One domain per side is stored in {@link Side#ALL} order, so the flat
-     * list is just them concatenated: if the TOP neighbour admits 7 tiles and
-     * the BOTTOM one admits 4, options 0..6 are the TOP tiles and options 7..10
-     * are the BOTTOM ones, and option 9 is the third tile of the BOTTOM domain.
-     * {@link #next()} walks the domains subtracting lengths until the option
-     * falls inside one of them, records its side and tile, and the cell to
-     * fill is then the anchor shifted by that side's offset.</p>
-     *
-     * <p>The object is also the record of its own cursor: {@link #x()},
-     * {@link #y()} and {@link #tileIndex()} describe the option
-     * {@code next()} handed out last, so the solver can place it, leave the
-     * view on the backtrack stack and, much later, undo exactly that
-     * placement. This only holds while the caller places every option it
-     * takes before asking for the next one: peeking or discarding without
-     * placing would overwrite the record unnoticed.</p>
-     *
-     * <p>The domains are references to the cached arrays of the board, never
-     * copies: a domain only changes by being replaced with a new array, so this
-     * object keeps the exact options the decision was taken with even while it
-     * waits in the solver's stack and the board changes around it.</p>
+     * <p>The options themselves are not stored: they are read live from the
+     * board by {@link #pickOption(Random)} every time one is needed, so they
+     * always reflect the current neighbours. What the decision keeps is the
+     * list of {@code (side, tile)} pairs already tried, identified by value
+     * so that a domain shrinking or growing around it can neither remap a
+     * cursor onto an already tried tile nor resurrect a failed one. The last
+     * pair of that list is the option the solver placed: {@link #x()},
+     * {@link #y()} and {@link #tileIndex()} describe it so the solver can
+     * undo exactly that placement. Every option handed out is placed before
+     * the next is asked for.</p>
      */
     static final class Options {
 
-        /** Shared result for an anchor that cannot grow at all. */
-        static final Options EMPTY = new Options(-1, -1);
+        /** One option tried on one side of the anchor. */
+        private record Placement(Side side, int tile) {
+        }
 
-        /** Column of the anchor the domains hang off. */
+        /**
+         * The live domains of the anchor's four neighbours, seen as one flat
+         * list in {@link Side#ALL} order. Built once per pick from the domains
+         * as they are at that moment; resolving a slot to its
+         * {@code (side, tile)} pair is what lets the picker probe a plain slot
+         * range instead of walking four arrays.
+         */
+        private static final class Neighborhood {
+
+            /** Domains of the four neighbours, in {@link Side#ALL} order. */
+            private final int[][] domains = new int[Side.ALL.length][];
+            /** Options the four domains hold together. */
+            private int total;
+
+            private Neighborhood(TileBoard board, int anchorX, int anchorY) {
+                for (Side side : Side.ALL) {
+                    int[] domain = board.domainAt(anchorX + side.dx(), anchorY + side.dy());
+                    domains[side.ordinal()] = domain;
+                    total += domain.length;
+                }
+            }
+
+            /** Gets how many options the four domains hold together. */
+            int size() {
+                return total;
+            }
+
+            /**
+             * Resolves a flat slot to the option it stands for.
+             *
+             * @param slot slot in {@code [0, size())}
+             * @return the {@code (side, tile)} pair that slot holds
+             */
+            Placement placementAt(int slot) {
+                for (Side side : Side.ALL) {
+                    int[] domain = domains[side.ordinal()];
+                    if (slot < domain.length) {
+                        return new Placement(side, domain[slot]);
+                    }
+                    slot -= domain.length;
+                }
+                throw new IllegalArgumentException("Slot out of range: " + slot);
+            }
+        }
+
+        /** Board whose live domains the options are read from. */
+        private final TileBoard board;
+        /** Column of the anchor the options hang off. */
         private final int anchorX;
-        /** Row of the anchor the domains hang off. */
+        /** Row of the anchor the options hang off. */
         private final int anchorY;
 
-        /** Tiles admitted per side, indexed by side; never {@code null}. */
-        private final int[][] domains = new int[Side.ALL.length][];
+        /** Pairs handed out so far, in order; the last one is the one placed. */
+        private final List<Placement> tried = new ArrayList<>(4);
 
-        /** Total options: the summed lengths of every domain. */
-        private int total;
-
-        /** Shuffled visit order of the {@code 0..total-1} options. */
-        private int[] visitOrder = new int[0];
-
-        /** How many options have already been handed out. */
-        private int cursor;
-
-        /** Side of the neighbour cell the current option fills. */
-        private Side currentSide;
-        /** Tile the current option would place in that cell. */
-        private int currentTile;
-
-        Options(int anchorX, int anchorY) {
+        private Options(TileBoard board, int anchorX, int anchorY) {
+            this.board = board;
             this.anchorX = anchorX;
             this.anchorY = anchorY;
-            Arrays.fill(domains, NO_TILES);
         }
 
         /**
-         * Records the tiles admitted by the neighbour cell on one side.
+         * Picks one tile to place in an empty neighbour of the anchor, at
+         * random among the options the decision has not tried yet.
          *
-         * @param side   side of the anchor where that neighbour sits
-         * @param domain the tiles allowed there, referenced, not copied
-         */
-        void addDomain(Side side, int[] domain) {
-            domains[side.ordinal()] = domain;
-            total += domain.length;
-        }
-
-        /**
-         * Fixes the random order in which the options will be tried, so the
-         * growth does not favour the first side over and over. Called once,
-         * after all domains are added, and never when there is nothing to
-         * visit.
+         * <p>The domains are read live from the board, so the option always
+         * fits the neighbours as they are now, not as they were when the
+         * decision was taken. The four neighbour domains are gathered into a
+         * {@link Neighborhood} flat list in {@link Side#ALL} order: a random
+         * start is drawn once and the list is probed forward, wrapping
+         * around, until an option the decision has not tried is found. The
+         * chosen option is appended to the tried list, so it becomes the last
+         * option handed out, which is the one the solver places and later
+         * undoes.</p>
          *
-         * @param random source of randomness
+         * @param random source used once to choose the probe start
+         * @return {@code true} if an untried option was handed out,
+         *         {@code false} when the anchor has no empty neighbour or
+         *         every option is tried
          */
-        void shuffleVisitOrder(Random random) {
-            visitOrder = shuffledRange(total, random);
-        }
-
-        /** Tells whether the anchor has no way to grow. */
-        boolean isEmpty() {
-            return total == 0;
-        }
-
-        /**
-         * Advances to the next option in visit order: walks the domains in
-         * side order, subtracting their lengths until the option falls inside
-         * one, and records it as the current option.
-         *
-         * @return {@code true} if an option was handed out, {@code false} when
-         *         the list was fully consumed
-         */
-        boolean next() {
-            if (cursor >= total) {
+        boolean pickOption(Random random) {
+            Neighborhood neighborhood = new Neighborhood(board, anchorX, anchorY);
+            int total = neighborhood.size();
+            if (total == 0) {
                 return false;
             }
-            int option = visitOrder[cursor++];
-            int slot = option;
-            for (Side side : Side.ALL) {
-                int[] domain = domains[side.ordinal()];
-                if (slot < domain.length) {
-                    currentSide = side;
-                    currentTile = domain[slot];
+            int start = random.nextInt(total);
+            for (int step = 0; step < total; step++) {
+                Placement placement = neighborhood.placementAt((start + step) % total);
+                if (!tried.contains(placement)) {
+                    tried.add(placement);
                     return true;
                 }
-                slot -= domain.length;
             }
-            throw new IllegalStateException("option " + option + " is out of range");
+            return false;
         }
 
-        /** Gets the column the current option would place its tile in. */
+        /** Gets the column the last option placed its tile in. */
         int x() {
-            return anchorX + currentSide.dx();
+            return anchorX + last().side().dx();
         }
 
-        /** Gets the row the current option would place its tile in. */
+        /** Gets the row the last option placed its tile in. */
         int y() {
-            return anchorY + currentSide.dy();
+            return anchorY + last().side().dy();
         }
 
-        /** Gets the tile the current option would place. */
+        /** Gets the tile the last option placed. */
         int tileIndex() {
-            return currentTile;
+            return last().tile();
+        }
+
+        /** The option handed out last, which the solver placed. */
+        private Placement last() {
+            return tried.get(tried.size() - 1);
         }
     }
 
@@ -641,10 +614,10 @@ final class TileBoard {
         if (!inBounds(x, y) || cells[x][y] != EMPTY) {
             return NO_TILES;
         }
-        int[] domain = candidates[x][y];
+        int[] domain = cachedDomains[x][y];
         if (domain == null) {
             domain = computeDomain(x, y);
-            candidates[x][y] = domain;
+            cachedDomains[x][y] = domain;
         }
         return domain;
     }
