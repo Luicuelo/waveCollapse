@@ -215,10 +215,21 @@ public class WaveFunction extends Application {
         System.out.println("Restarting " + activeSet + " with seed " + seed
                 + (fastMode ? " (fast mode)" : ""));
 
-        int cell = activeSet.getCellSize() * pixelSize;
-        int overlap = activeSet.usesOverlap() ? activeSet.getTileSize() * pixelSize : 0;
-        int columns = boardDimension(canvasWidth, cell, overlap);
-        int rows = boardDimension(canvasHeight, cell, overlap);
+        int tilePixels = activeSet.getTileSize() * pixelSize;
+        int columns;
+        int rows;
+        if (activeSet.usesOverlap()) {
+            // Overlapping tiles sit one anchor step apart (one pattern pixel
+            // in hard overlap, two in soft) and the first anchor is a whole
+            // tile away from the right/bottom edge, so the last tile ends
+            // flush with the canvas.
+            int step = activeSet.anchorStep() * pixelSize;
+            columns = Math.max(1, (canvasWidth - tilePixels) / step + 1);
+            rows = Math.max(1, (canvasHeight - tilePixels) / step + 1);
+        } else {
+            columns = Math.max(1, canvasWidth / tilePixels);
+            rows = Math.max(1, canvasHeight / tilePixels);
+        }
         TileBoard board = new TileBoard(activeSet, columns, rows);
 
         renderer.setPixelSize(pixelSize);
@@ -226,14 +237,6 @@ public class WaveFunction extends Application {
 
         solver.setSeed(seed);
         solver.solve(board, renderer.newSession(board, fastMode), fastMode);
-    }
-
-    /** Calculates the cells needed to cover the canvas using the set's anchors. */
-    private static int boardDimension(int canvasSize, int cell, int overlap) {
-        if (overlap == 0) {
-            return Math.max(1, canvasSize / cell);
-        }
-        return Math.max(1, (int) Math.ceil((canvasSize - overlap) / (double) cell));
     }
 
     /**
@@ -273,7 +276,8 @@ public class WaveFunction extends Application {
 
     private static TileSet parseTileSet(String name) {
         for (TileSet set : TileSet.values()) {
-            if (set.getFolderName().equalsIgnoreCase(name) || set.name().equalsIgnoreCase(name)) {
+            if (set.getFolderName().equalsIgnoreCase(name) || set.name().equalsIgnoreCase(name)
+                    || set.toString().equalsIgnoreCase(name)) {
                 return set;
             }
         }

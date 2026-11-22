@@ -5,7 +5,6 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.Image;
 import javafx.scene.paint.Color;
 
-import java.util.Arrays;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
@@ -80,8 +79,12 @@ final class Renderer {
     private long lastFastRepaint;
 
     private int pixelSize;
-    private int[][] displayedTiles;
-    private int overlapOffsetY;
+
+    /**
+     * Board of the session in progress, kept for the overlapping geometry (the
+     * bottom anchor needs the row count) and to repaint neighbours on erase.
+     */
+    private TileBoard board;
 
     /**
      * Creates a renderer.
@@ -122,19 +125,8 @@ final class Renderer {
      */
     WfcSolver.BoardListener newSession(TileBoard board, boolean fast) {
         long token = resetPendingActions();
-        displayedTiles = null;
         lastFastRepaint = 0;
-        overlapOffsetY = 0;
-        TileSet set = board.getSet();
-        if (set.usesOverlap()) {
-            displayedTiles = new int[board.getWidth()][board.getHeight()];
-            for (int[] column : displayedTiles) {
-                Arrays.fill(column, TileBoard.EMPTY);
-            }
-            int cell = cellPixels(set);
-            int imageSize = set.getTileSize() * tilePixelSize(set);
-            overlapOffsetY = (int) gc.getCanvas().getHeight() - (board.getHeight() - 1) * cell - imageSize;
-        }
+        this.board = board;
         currentSession = new Session(token, board, fast);
         return currentSession;
     }
@@ -223,8 +215,12 @@ final class Renderer {
     }
 
     /**
-     * Paints a tile, scaled so each of its pixels becomes a
-     * {@link #pixelSize} square on screen.
+     * Paints a tile in full. Overlapping tiles are spaced by the anchor step of
+     * their mode instead of a whole tile. Hard overlap overwrites the two shared
+     * lines, identical on both tiles, so the overwrite is invisible. Soft overlap
+     * leaves its first row and last column transparent, so each tile paints only
+     * the lines it owns and never covers the neighbour's shared line, whatever
+     * the painting order.
      */
     private void paintTile(TileSet set, int tileIndex, int x, int y) {
         Tile tile = set.get(tileIndex);
@@ -235,76 +231,61 @@ final class Renderer {
         if (image == null) {
             return;
         }
-
-        if (set.usesOverlap()) {
-            displayedTiles[x][y] = tileIndex;
-            redrawOverlap(set, x, y);
-            return;
-        }
-
-        int cell = cellPixels(set);
         gc.setImageSmoothing(false);
-        gc.drawImage(image, (double) x * cell, (double) y * cell,
+        gc.drawImage(image, cellX(set, x), cellY(set, y),
                 image.getWidth() * pixelSize, image.getHeight() * pixelSize);
     }
 
     /**
-     * Clears the area covered by a tile with the background colour.
+     * Clears the area covered by a tile with the background colour. For an
+     * overlapping set the erased tile shared lines with each neighbour, so
+     * the placed neighbours are repainted afterwards to bring those lines back
+     * instead of leaving a background seam.
      */
     private void eraseTile(TileSet set, int x, int y) {
-        if (set.usesOverlap()) {
-            displayedTiles[x][y] = TileBoard.EMPTY;
-            redrawOverlap(set, x, y);
-            return;
-        }
-        int cell = cellPixels(set);
+        int size = tilePixels(set);
         gc.setFill(backgroundColor);
-        gc.fillRect((double) x * cell, (double) y * cell, cell, cell);
-    }
-
-    /**
-     * Reconstructs the affected area from the tiles already drawn. Tiles above
-     * and to the right are drawn last and take precedence in the overlap.
-     */
-    private void redrawOverlap(TileSet set, int x, int y) {
-        int cell = cellPixels(set);
-        int zoom = tilePixelSize(set);
-        int imageSize = set.getTileSize() * zoom;
-        double screenX = (double) x * cell;
-        double screenY = (double) y * cell + overlapOffsetY;
-
-        gc.save();
-        gc.beginPath();
-        gc.rect(screenX, screenY, imageSize, imageSize);
-        gc.clip();
-        gc.setFill(backgroundColor);
-        gc.fillRect(screenX, screenY, imageSize, imageSize);
-        gc.setImageSmoothing(false);
-        for (int row = y + 1; row >= y - 1; row--) {
-            for (int column = x - 1; column <= x + 1; column++) {
-                if (column < 0 || column >= displayedTiles.length
-                        || row < 0 || row >= displayedTiles[column].length) {
-                    continue;
-                }
-                Tile tile = set.get(displayedTiles[column][row]);
-                if (tile != null && tile.getImage() != null) {
-                    Image image = tile.getImage();
-                    gc.drawImage(image, (double) column * cell, (double) row * cell + overlapOffsetY,
-                            image.getWidth() * zoom, image.getHeight() * zoom);
+        gc.fillRect(cellX(set, x), cellY(set, y), size, size);
+        if (set.usesOverlap() && board != null) {
+            for (Tile.Side side : Tile.Side.ALL) {
+                int nx = x + side.dx();
+                int ny = y + side.dy();
+                if (board.inBounds(nx, ny)) {
+                    int neighbor = board.getTileIndex(nx, ny);
+                    if (neighbor != TileBoard.EMPTY) {
+                        paintTile(set, neighbor, nx, ny);
+                    }
                 }
             }
         }
-        gc.restore();
     }
 
-    /** Distance between anchors in screen pixels. */
-    private int cellPixels(TileSet set) {
-        return pixelSize * set.getCellSize();
+    /** Screen size of a whole tile. */
+    private int tilePixels(TileSet set) {
+        return pixelSize * set.getTileSize();
     }
 
-    /** Size of a pattern pixel on screen. */
-    private int tilePixelSize(TileSet set) {
-        return pixelSize * (set.usesOverlap() ? set.getTileSize() : 1);
+    /** Distance between two neighbouring cell anchors on screen. */
+    private int stepPixels(TileSet set) {
+        return set.anchorStep() * pixelSize;
+    }
+
+    /** Screen x of a cell anchor; overlapping cells advance by the step. */
+    private double cellX(TileSet set, int x) {
+        return (double) x * stepPixels(set);
+    }
+
+    /**
+     * Screen y of a cell anchor. Overlapping boards are anchored at the bottom:
+     * the last row sits a whole tile above the canvas bottom and each row up
+     * moves by the step, so the ground row ends flush with the bottom edge.
+     */
+    private double cellY(TileSet set, int y) {
+        if (!set.usesOverlap()) {
+            return (double) y * tilePixels(set);
+        }
+        double bottom = gc.getCanvas().getHeight() - tilePixels(set);
+        return bottom - (double) (board.getHeight() - 1 - y) * stepPixels(set);
     }
 
     /**
@@ -329,11 +310,6 @@ final class Renderer {
         // A clean full redraw: a progress repaint may cover an older snapshot,
         // and backtracking may have emptied cells since the last one.
         clearCanvas();
-        if (set.usesOverlap()) {
-            for (int[] column : displayedTiles) {
-                Arrays.fill(column, TileBoard.EMPTY);
-            }
-        }
         for (int x = 0; x < board.getWidth(); x++) {
             for (int y = 0; y < board.getHeight(); y++) {
                 int tileIndex = board.getTileIndex(x, y);

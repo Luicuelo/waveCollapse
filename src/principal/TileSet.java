@@ -8,10 +8,12 @@ import javafx.scene.image.WritableImage;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * The tile sets bundled with the application, together with the tiles they are
@@ -31,106 +33,110 @@ import java.util.Random;
  *   <li>{@link HandWritten} sets declare their tiles one by one and load their
  *       graphics from {@code /&lt;folder&gt;/&lt;name&gt;.png}.</li>
  *   <li>{@link Sampled} extracts each window from
- *       {@code /sample/&lt;name&gt;.png}. For overlapping sets, the top and right
- *       sides are read from the inner lines; the "from bottom" variant starts
- *       with a tile from the sample's last row.</li>
+ *       {@code /sample/&lt;name&gt;.png}. Overlapping sets come in two modes:
+ *       hard overlap shares two lines between neighbours and signs every zone
+ *       with a pair of lines, soft overlap shares one line and signs single
+ *       lines; the "from bottom" variant starts with a tile from the sample's
+ *       last row.</li>
  * </ul>
  *
- * <p>Base tiles are mirrored and rotated to generate their variants.</p>
+ * <p>Base tiles are mirrored and rotated to generate their variants; a sampled
+ * set can choose which symmetries it wants through {@link Variant}, and keeps
+ * all of them by default.</p>
  */
 enum TileSet {
 
     /** Electronic traces, vias and components. */
     CIRCUIT(new HandWritten("circuit", 14,
-            new Definition("bridge", "GBGWGBGW"),
-            new Definition("component", "DDDDDDDD"),
-            new Definition("connection", "GBGGDDDG"),
-            new Definition("corner", "GGGGGGDG"),
+            new Definition("bridge", "GBGGWGGBGGWG"),
+            new Definition("component", "DDDDDDDDDDDD"),
+            new Definition("connection", "GBGGGDDDDGGD"),
+            new Definition("corner", "GGGGGGDGGGGD"),
             // dskew has no vertical mirror, so its horizontal mirror is forced.
-            new Definition("dskew", "GBGBGBGB", false, true),
-            new Definition("ecomponent", "GGGGDDDG"),
-            new Definition("skew", "GBGBGGGG"),
-            new Definition("substrate", "GGGGGGGG"),
-            new Definition("t", "GGGBGBGB"),
-            new Definition("track", "GBGGGBGG"),
-            new Definition("transition", "GWGGGBGG"),
-            new Definition("turn", "GBGBGGGG"),
-            new Definition("viad", "GGGBGGGB"),
-            new Definition("vias", "GBGGGGGG"),
-            new Definition("wire", "GGGWGGGW"))),
+            new Definition("dskew", "GBGGBGGBGGBG", false, true),
+            new Definition("ecomponent", "GGGGGDDDDGGD"),
+            new Definition("skew", "GBGGBGGGGGGG"),
+            new Definition("substrate", "GGGGGGGGGGGG"),
+            new Definition("t", "GGGGBGGBGGBG"),
+            new Definition("track", "GBGGGGGBGGGG"),
+            new Definition("transition", "GWGGGGGBGGGG"),
+            new Definition("turn", "GBGGBGGGGGGG"),
+            new Definition("viad", "GGGGBGGGGGBG"),
+            new Definition("vias", "GBGGGGGGGGGG"),
+            new Definition("wire", "GGGGWGGGGGWG"))),
 
     /** Stone walls, rivers, roads and bridges. */
     CASTLE(new HandWritten("castle", 7,
-            new Definition("bridge", "GBGYGBGY"),
-            new Definition("ground", "GGGGGGGG"),
-            new Definition("river", "GBGGGBGG"),
-            new Definition("riverturn", "GBGBGGGG"),
-            new Definition("road", "GYGGGYGG"),
-            new Definition("roadturn", "GYGYGGGG"),
-            new Definition("t", "GGGYGYGY"),
-            new Definition("tower", "GWGWGGGG", true),
-            new Definition("wall", "GWGGGWGG"),
-            new Definition("wallriver", "GWGBGWGB"),
-            new Definition("wallroad", "GWGYGWGY"))),
+            new Definition("bridge", "GBGGYGGBGGYG"),
+            new Definition("ground", "GGGGGGGGGGGG"),
+            new Definition("river", "GBGGGGGBGGGG"),
+            new Definition("riverturn", "GBGGBGGGGGGG"),
+            new Definition("road", "GYGGGGGYGGGG"),
+            new Definition("roadturn", "GYGGYGGGGGGG"),
+            new Definition("t", "GGGGYGGYGGYG"),
+            new Definition("tower", "GWGGWGGGGGGG", true),
+            new Definition("wall", "GWGGGGGWGGGG"),
+            new Definition("wallriver", "GWGGBGGWGGBG"),
+            new Definition("wallroad", "GWGGYGGWGGYG"))),
 
     /** Celtic knots. */
     KNOTS(new HandWritten("knots", 10,
-            new Definition("corner", "WCWCWWWW"),
-            new Definition("cross", "WCWCWCWC"),
-            new Definition("empty", "WWWWWWWW"),
-            new Definition("line", "WWWCWWWC"),
-            new Definition("t", "WWWCWCWC"))),
+            new Definition("corner", "WCWWCWWWWWWW"),
+            new Definition("cross", "WCWWCWWCWWCW"),
+            new Definition("empty", "WWWWWWWWWWWW"),
+            new Definition("line", "WWWWCWWWWWCW"),
+            new Definition("t", "WWWWCWWCWWCW"))),
 
     /** Minimal black and white line work. */
     SIMPLE(new HandWritten("simple", 3,
-            new Definition("blank", "WWWWWWWW"),
-            new Definition("corner", "WCWCWWWW"),
-            new Definition("cross", "WCWCWCWC"),
-            new Definition("line", "WWWCWWWC"),
-            new Definition("t", "WWWCWCWC"))),
+            new Definition("blank", "WWWWWWWWWWWW"),
+            new Definition("corner", "WCWWCWWWWWWW"),
+            new Definition("cross", "WCWWCWWCWWCW"),
+            new Definition("line", "WWWWCWWWWWCW"),
+            new Definition("t", "WWWWCWWCWWCW"))),
 
     /** Rooms, corridors, doors, glass walls and furniture. */
     FLOORPLAN(new HandWritten("floorPlan", 9,
-            new Definition("div", "GGGLGGGL"),
-            new Definition("divt", "GGGLGLGL"),
-            new Definition("divturn", "GLGLGGGG"),
-            new Definition("door", "GGGLGGGL"),
-            new Definition("empty", "WWWWWWWW"),
-            new Definition("floor", "GGGGGGGG"),
-            new Definition("glass", "GGGMWWWM"),
-            new Definition("halfglass", "GGGMWWWD"),
-            new Definition("in", "GGGGGDWD"),
-            new Definition("out", "WDGDWWWW"),
-            new Definition("stairs", "GGGLGSGL"),
-            new Definition("table", "GGGGGGGG", true),
-            new Definition("vent", "WWWWWWWW", true),
-            new Definition("w", "GGGDWWWD", true),
-            new Definition("wall", "GGGDWWWD"),
-            new Definition("walldiv", "GLGDWWWD"),
-            new Definition("window", "GGGDWWWD", true))),
+            new Definition("div", "GGGGLGGGGGLG"),
+            new Definition("divt", "GGGGLGGLGGLG"),
+            new Definition("divturn", "GLGGLGGGGGGG"),
+            new Definition("door", "GGGGLGGGGGLG"),
+            new Definition("empty", "WWWWWWWWWWWW"),
+            new Definition("floor", "GGGGGGGGGGGG"),
+            new Definition("glass", "GGGGMWWWWGMW"),
+            new Definition("halfglass", "GGGGMWWWWGDW"),
+            new Definition("in", "GGGGGGWDGGDW"),
+            new Definition("out", "WDGGDWWWWWWW"),
+            new Definition("stairs", "GGGGLGGSGGLG"),
+            new Definition("table", "GGGGGGGGGGGG", true),
+            new Definition("vent", "WWWWWWWWWWWW", true),
+            new Definition("w", "GGGGDWWWWGDW", true),
+            new Definition("wall", "GGGGDWWWWGDW"),
+            new Definition("walldiv", "GLGGDWWWWGDW"),
+            new Definition("window", "GGGGDWWWWGDW", true))),
 
     /** Blueprint style rooms. */
     ROOMS(new HandWritten("rooms", 3,
-            new Definition("bend", "WBBBWWWW"),
-            new Definition("corner", "BBWBBBBB"),
-            new Definition("corridor", "BWBBBWBB"),
-            new Definition("door", "WWWBBWBB"),
-            new Definition("empty", "WWWWWWWW"),
-            new Definition("side", "BBBBWWWB"),
-            new Definition("t", "BBBWBWBW"),
-            new Definition("turn", "BWBWBBBB"),
-            new Definition("wall", "BBBBBBBB"))),
+            new Definition("bend", "WBBBBWWWWWWW"),
+            new Definition("corner", "BBWWBBBBBBBB"),
+            new Definition("corridor", "BWBBBBBWBBBB"),
+            new Definition("door", "WWWWBBBWBWBB"),
+            new Definition("empty", "WWWWWWWWWWWW"),
+            new Definition("side", "BBBBBWWWWBBW"),
+            new Definition("t", "BBBBWBBWBBWB"),
+            new Definition("turn", "BWBBWBBBBBBB"),
+            new Definition("wall", "BBBBBBBBBBBB"))),
 
     /** Black and white circles that tile into each other. */
     CIRCLES(new HandWritten("circles", 32,
-            new Definition("b", "WBWBWBWB"),
-            new Definition("w", "BWBWBWBW"),
-            new Definition("b_half", "WBWWWWWW"),
-            new Definition("w_half", "BWBBBBBB"),
-            new Definition("b_i", "WBWWWBWW"),
-            new Definition("w_i", "BWBBBWBB"),
-            new Definition("b_quarter", "WBWBWWWW"),
-            new Definition("w_quarter", "BWBWBBBB"))),
+            new Definition("b", "WBWWBWWBWWBW"),
+            new Definition("w", "BWBBWBBWBBWB"),
+            new Definition("b_half", "WBWWWWWWWWWW"),
+            new Definition("w_half", "BWBBBBBBBBBB"),
+            new Definition("b_i", "WBWWWWWBWWWW"),
+            new Definition("w_i", "BWBBBBBWBBBB"),
+            new Definition("b_quarter", "WBWWBWWWWWWW"),
+            new Definition("w_quarter", "BWBBWBBBBBBB"))),
 
     /** Sample: non overlapping windows. */
     NOT_KNOT(Sampled.plain("NotKnot")),
@@ -153,20 +159,29 @@ enum TileSet {
     /** Sample: non overlapping windows. */
     WATER(Sampled.plain("Water")),
 
-    /** Sample: non overlapping windows, seeded from the bottom row of the sample. */
-    FLOWERS(Sampled.fromBottomNoOverlap("Flowers2")),
+    /** Sample: hard overlap windows, seeded from the bottom row of the sample. */
+    FLOWERS(Sampled.plainFromBottomHardOverlap("Flowers2",Set.of(Variant.HORIZONTAL_MIRROR))),
 
-    /** Sample: non overlapping windows, seeded from the bottom row of the sample. */
-    SKYLINE(Sampled.fromBottomNoOverlap("Skyline")),
+    /** Sample: soft overlap windows, seeded from the bottom row of the sample. */
+    FLOWERS_SOFT(Sampled.plainFromBottomSoftOverlap("Flowers2")),
 
-    /** Sample: non overlapping windows, seeded from the bottom row of the sample. */
-    SCALED_MAZE(Sampled.overlapping("ScaledMaze")),
+    /** Sample: soft overlap windows. */
+    SCALEDMAZE(Sampled.softOverlap("ScaledMaze")),
 
-    /** Sample: overlapping windows. */
-    SIMPLE_WALL(Sampled.overlapping("SimpleWall")),
+    /** Sample: hard overlap windows, seeded from the bottom row of the sample. */
+    SKYLINE(Sampled.plainFromBottomHardOverlap("Skyline2")),
 
-    /** Sample: overlapping windows. */
-    PATHS(Sampled.overlapping("Paths"));
+    /** Sample: hard overlap windows. */
+    SIMPLE_WALL(Sampled.hardOverlap("SimpleWall")),
+
+    /** Sample: soft overlap windows. */
+    SIMPLE_WALL_SOFT(Sampled.softOverlap("SimpleWall")),
+
+    /** Sample: hard overlap windows. */
+    PATHS(Sampled.hardOverlap("Paths")),
+
+    /** Sample: soft overlap windows. */
+    PATHS_SOFT(Sampled.softOverlap("Paths"));
 
     private final TilesSource tilesSource;
 
@@ -264,6 +279,17 @@ enum TileSet {
     }
 
     /**
+     * Gets the distance, in pattern pixels, between two neighbouring cell
+     * anchors: a whole tile when patterns do not overlap, the tile side minus
+     * the shared lines when they do.
+     *
+     * @return the anchor step in pattern pixels
+     */
+    int anchorStep() {
+        return tilesSource.anchorStep();
+    }
+
+    /**
      * Tells whether the generation has to start with a bottom row tile.
      *
      * @return {@code true} if the first tile must be a bottom tile
@@ -290,12 +316,6 @@ enum TileSet {
      */
     int getTileSize() {
         return tilesSource.tileSize();
-    }
-
-    /** Distance between anchors before applying the screen zoom. */
-    int getCellSize() {
-        int size = getTileSize();
-        return usesOverlap() ? (size - 1) * size : size;
     }
 
     /**
@@ -325,14 +345,15 @@ enum TileSet {
     }
 
     /**
-     * Returns the folder name, which reads better than the constant name in the
-     * set selector of the user interface.
+     * Returns the display name, which reads better than the constant name in
+     * the set selector of the user interface. Sampled sets carry their overlap
+     * mode in it, so both variants of a sample can be told apart.
      *
-     * @return the folder name of the set
+     * @return the display name of the set
      */
     @Override
     public String toString() {
-        return getFolderName();
+        return tilesSource.displayName();
     }
 
     /**
@@ -429,10 +450,11 @@ enum TileSet {
                                          Palette palette) {
         int initialSize = building.size();
         boolean added = false;
+        Set<Transform> transforms = Variant.transformsOf(tilesSource.variants());
 
         for (int i = 0; i < initialSize; i++) {
             Tile original = building.get(i);
-            for (Transform transform : Transform.values()) {
+            for (Transform transform : transforms) {
                 if (original.isBottomTile() && transform != Transform.HORIZONTAL_MIRROR) {
                     continue;
                 }
@@ -448,7 +470,7 @@ enum TileSet {
      * <p>The scope of the duplicate check is decided by the {@link TilesSource}:
      * hand declared sets only compare against tiles with the same name, so two
      * different tiles may share a border. Non-overlapping sampled sets also
-     * compare every pixel in the image.</p>
+     * compare the middle pixel, the only one their description leaves out.</p>
      *
      * @param building  list the derived tile is added to
      * @param index     index updated when the tile is added
@@ -495,8 +517,14 @@ enum TileSet {
     }
 
     /**
-     * Finds an equivalent description. Non-overlapping samples also compare the
-     * entire image because signatures do not include all of its pixels.
+     * Finds a tile that shows the same thing.
+     *
+     * <p>The description already holds every pixel of the outer ring, because
+     * its twelve zones cover the four sides of a three by three window, so the
+     * middle one is all that is left: two tiles are the same when they agree on
+     * both, and their images never need to be compared. Hand declared sets stop
+     * at the description, because two of their tiles may legitimately share a
+     * border.</p>
      */
     private static Tile findMatchingTile(List<Tile> building, String sides, String onlyForName, Image image) {
         for (Tile tile : building) {
@@ -504,11 +532,18 @@ enum TileSet {
                 continue;
             }
             if (tile.getSidesDescription().equals(sides)
-                    && (onlyForName != null || TileImageOps.samePixels(tile.getImage(), image))) {
+                    && (onlyForName != null || sameMiddle(tile.getImage(), image))) {
                 return tile;
             }
         }
         return null;
+    }
+
+    /** Compares the one pixel of a window that its border description omits. */
+    private static boolean sameMiddle(Image first, Image second) {
+        int x = (int) first.getWidth() / 2;
+        int y = (int) first.getHeight() / 2;
+        return first.getPixelReader().getArgb(x, y) == second.getPixelReader().getArgb(x, y);
     }
 
     /**
@@ -640,6 +675,27 @@ enum TileSet {
         }
 
         /**
+         * Gets the distance, in pattern pixels, between two neighbouring
+         * anchors. Tiles that do not overlap touch edge to edge, so they sit a
+         * whole tile apart.
+         *
+         * @return the anchor step in pattern pixels
+         */
+        default int anchorStep() {
+            return tileSize();
+        }
+
+        /**
+         * Gets the name shown in the set selector: the folder name, unless the
+         * source needs to tell variants of the same graphics apart.
+         *
+         * @return the display name of the set
+         */
+        default String displayName() {
+            return folderName();
+        }
+
+        /**
          * Tells whether the generation has to start with a tile from the bottom
          * row of the sample instead of a random one.
          *
@@ -647,6 +703,16 @@ enum TileSet {
          */
         default boolean startsFromBottom() {
             return false;
+        }
+
+        /**
+         * Which symmetries of a base tile this source generates. Hand written
+         * sets keep every symmetry.
+         *
+         * @return the selected variants
+         */
+        default Set<Variant> variants() {
+            return Variant.ALL_VARIANTS;
         }
     }
 
@@ -669,23 +735,10 @@ enum TileSet {
         public void loadBaseTiles(List<Tile> building, Map<SideKey, List<Integer>> index, Palette palette) {
             for (Definition definition : definitions) {
                 addTile(building, index,
-                        new Tile(definition.name(), expandSides(definition.sidesDescription()),
+                        new Tile(definition.name(), definition.sidesDescription(),
                                 definition.forcesHorizontalMirror(), definition.forbidsSameNeighbor(),
                                 loadGraphic(definition.name())));
             }
-        }
-
-        /** Expands the traditional eight-zone description into four sides. */
-        private static String expandSides(String sides) {
-            if (sides.length() != 8) {
-                throw new IllegalArgumentException("A hand-written tile must have eight zones");
-            }
-            int[] positions = {0, 1, 2, 2, 3, 4, 6, 5, 4, 0, 7, 6};
-            StringBuilder expanded = new StringBuilder(Tile.SIDES_LENGTH);
-            for (int position : positions) {
-                expanded.append(sides.charAt(position));
-            }
-            return expanded.toString();
         }
 
         @Override
@@ -708,16 +761,88 @@ enum TileSet {
     }
 
     /**
+     * How neighbouring windows of a sampled set meet, and what a side signs.
+     * The shared lines are also what the anchor step subtracts from the tile
+     * side.
+     */
+    private enum Overlap {
+
+        /** Windows touch edge to edge; a side signs its outer line. */
+        NONE(0),
+
+        /**
+         * Anchors sit two pattern pixels apart, so neighbours share one line;
+         * a side signs a single line, offset inwards on the side facing the
+         * previous tile (TOP and RIGHT the middle line, BOTTOM the last, LEFT
+         * the first). The tile image drops its first row and last column, so
+         * the neighbour that owns the shared line always paints it, whatever
+         * the order.
+         */
+        SOFT(1),
+
+        /**
+         * Anchors sit one pattern pixel apart, so neighbours share two lines;
+         * a side signs the pair of lines facing the neighbour.
+         */
+        HARD(2);
+
+        /** Lines of pixels two neighbouring windows share. */
+        private final int sharedLines;
+
+        Overlap(int sharedLines) {
+            this.sharedLines = sharedLines;
+        }
+    }
+
+    /**
+     * Which symmetries of a base tile a set generates. A set is created with the
+     * ones it wants; {@link #ALL_VARIANTS} keeps every symmetry, the default.
+     */
+    private enum Variant {
+
+        /** Quarter, half and three quarter turns. */
+        ROTATIONS,
+        /** Left-right mirror. */
+        HORIZONTAL_MIRROR,
+        /** Top-bottom mirror. */
+        VERTICAL_MIRROR;
+
+        /** Every symmetry, matching the original behaviour of every set. */
+        private static final Set<Variant> ALL_VARIANTS = EnumSet.allOf(Variant.class);
+
+        /** No symmetry at all: only the base windows are kept. */
+        private static final Set<Variant> NO_VARIANTS = EnumSet.noneOf(Variant.class);
+
+        /** The image transforms a selection stands for, in declaration order. */
+        private static Set<Transform> transformsOf(Set<Variant> selection) {
+            Set<Transform> transforms = EnumSet.noneOf(Transform.class);
+            if (selection.contains(HORIZONTAL_MIRROR)) {
+                transforms.add(Transform.HORIZONTAL_MIRROR);
+            }
+            if (selection.contains(VERTICAL_MIRROR)) {
+                transforms.add(Transform.VERTICAL_MIRROR);
+            }
+            if (selection.contains(ROTATIONS)) {
+                transforms.add(Transform.ROTATE_90);
+                transforms.add(Transform.ROTATE_180);
+                transforms.add(Transform.ROTATE_270);
+            }
+            return transforms;
+        }
+    }
+
+    /**
      * A set whose tiles are the distinct windows of a sample.
      * Overlapping patterns are deduplicated by their sides after generating their variants.
      *
      * @param folderName       name of the sample, without extension
      * @param tileSize         side of a window, in pixels
-     * @param usesOverlap      whether neighbouring patterns share one pixel
+     * @param overlap          how neighbouring windows meet and sign their sides
      * @param startsFromBottom whether the generation starts from the bottom row
+     * @param variants         which symmetries of each window are generated
      */
-    private record Sampled(String folderName, int tileSize, boolean usesOverlap,
-                           boolean startsFromBottom) implements TilesSource {
+    private record Sampled(String folderName, int tileSize, Overlap overlap,
+                           boolean startsFromBottom, Set<Variant> variants) implements TilesSource {
 
         /** Side, in pixels, of the windows cut out of a sample. */
         private static final int TILESIZE = 3;
@@ -730,27 +855,94 @@ enum TileSet {
          * @return the description of that set
          */
         private static Sampled plain(String sampleName) {
-            return new Sampled(sampleName, TILESIZE, false, false);
+            return plain(sampleName, Variant.ALL_VARIANTS);
+        }
+
+        /** As {@link #plain(String)}, choosing which symmetries to generate. */
+        private static Sampled plain(String sampleName, Set<Variant> variants) {
+            return new Sampled(sampleName, TILESIZE, Overlap.NONE, false, variants);
         }
 
         /**
-         * A sample whose windows share one pixel with their neighbours.
+         * A sample whose windows overlap by two lines: anchors sit one pattern
+         * pixel apart, so each zone of a side is a pair of lines instead of one.
          *
          * @param sampleName name of the sample image, without extension
          * @return the description of that set
          */
-        private static Sampled overlapping(String sampleName) {
-            return new Sampled(sampleName, TILESIZE, true, false);
+        private static Sampled hardOverlap(String sampleName) {
+            return hardOverlap(sampleName, Variant.ALL_VARIANTS);
+        }
+
+        /** As {@link #hardOverlap(String)}, choosing which symmetries to generate. */
+        private static Sampled hardOverlap(String sampleName, Set<Variant> variants) {
+            return new Sampled(sampleName, TILESIZE, Overlap.HARD, false, variants);
         }
 
         /**
-         * A non overlapping sample whose generation is seeded from its bottom row.
+         * A sample whose windows overlap by one line: anchors sit two pattern
+         * pixels apart and each zone of a side is a single line, offset inwards
+         * on the side facing the previous tile.
          *
          * @param sampleName name of the sample image, without extension
          * @return the description of that set
          */
-        private static Sampled fromBottomNoOverlap(String sampleName) {
-            return new Sampled(sampleName, TILESIZE, false, true);
+        private static Sampled softOverlap(String sampleName) {
+            return softOverlap(sampleName, Variant.ALL_VARIANTS);
+        }
+
+        /** As {@link #softOverlap(String)}, choosing which symmetries to generate. */
+        private static Sampled softOverlap(String sampleName, Set<Variant> variants) {
+            return new Sampled(sampleName, TILESIZE, Overlap.SOFT, false, variants);
+        }
+
+        /**
+         * A hard overlapping sample whose generation is seeded from its bottom row.
+         *
+         * @param sampleName name of the sample image, without extension
+         * @return the description of that set
+         */
+        private static Sampled plainFromBottomHardOverlap(String sampleName) {
+            return plainFromBottomHardOverlap(sampleName, Variant.ALL_VARIANTS);
+        }
+
+        /** As {@link #plainFromBottomHardOverlap(String)}, choosing the symmetries. */
+        private static Sampled plainFromBottomHardOverlap(String sampleName, Set<Variant> variants) {
+            return new Sampled(sampleName, TILESIZE, Overlap.HARD, true, variants);
+        }
+
+        /**
+         * A soft overlapping sample whose generation is seeded from its bottom row.
+         *
+         * @param sampleName name of the sample image, without extension
+         * @return the description of that set
+         */
+        private static Sampled plainFromBottomSoftOverlap(String sampleName) {
+            return plainFromBottomSoftOverlap(sampleName, Variant.ALL_VARIANTS);
+        }
+
+        /** As {@link #plainFromBottomSoftOverlap(String)}, choosing the symmetries. */
+        private static Sampled plainFromBottomSoftOverlap(String sampleName, Set<Variant> variants) {
+            return new Sampled(sampleName, TILESIZE, Overlap.SOFT, true, variants);
+        }
+
+        @Override
+        public boolean usesOverlap() {
+            return overlap != Overlap.NONE;
+        }
+
+        @Override
+        public int anchorStep() {
+            return tileSize - overlap.sharedLines;
+        }
+
+        @Override
+        public String displayName() {
+            return switch (overlap) {
+                case NONE -> folderName;
+                case SOFT -> folderName + " softOverlap";
+                case HARD -> folderName + " hardOverlap";
+            };
         }
 
         @Override
@@ -764,7 +956,7 @@ enum TileSet {
             int width = (int) sample.getWidth();
             int height = (int) sample.getHeight();
 
-            if (usesOverlap) {
+            if (usesOverlap()) {
                 loadOverlappingTiles(building, index, palette, reader, width, height);
             } else {
                 loadPlainTiles(building, index, palette, reader, width, height);
@@ -773,7 +965,7 @@ enum TileSet {
 
         /**
          * Cuts every non overlapping window out of the sample, skipping the ones
-         * whose sides already exist, and flags the windows of the last row as
+         * that are already present, and flags the windows of the last row as
          * ground when the set is seeded from the bottom.
          */
         private void loadPlainTiles(List<Tile> building, Map<SideKey, List<Integer>> index,
@@ -781,7 +973,7 @@ enum TileSet {
             for (int y = 0; y + tileSize <= height; y++) {
                 for (int x = 0; x + tileSize <= width; x++) {
                     WritableImage pattern = TileImageOps.copyRegion(reader, x, y, tileSize);
-                    String sides = describeSides(palette, pattern.getPixelReader(), tileSize, false);
+                    String sides = describeSides(palette, pattern.getPixelReader(), tileSize, Overlap.NONE);
                     if (findMatchingTile(building, sides, null, pattern) != null) {
                         continue;
                     }
@@ -802,7 +994,7 @@ enum TileSet {
             for (int y = 0; y + tileSize <= height; y++) {
                 for (int x = 0; x + tileSize <= width; x++) {
                     Image image = TileImageOps.copyRegion(reader, x, y, tileSize);
-                    String sides = describeSides(palette, image.getPixelReader(), tileSize, true);
+                    String sides = describeSides(palette, image.getPixelReader(), tileSize, overlap);
                     Tile original = new Tile(folderName + "_" + x + "_" + y, sides, false, false, image);
                     if (startsFromBottom && y == height - tileSize) {
                         original.markAsBottomTile();
@@ -813,21 +1005,46 @@ enum TileSet {
             }
 
             // Even if two originals share a signature, their mirrors may differ.
+            boolean rotations = variants.contains(Variant.ROTATIONS);
+            boolean horizontal = variants.contains(Variant.HORIZONTAL_MIRROR);
+            // A vertical mirror adds nothing new once rotations and a horizontal
+            // mirror are both present: rotating the horizontal mirror already
+            // reaches it, so it is only generated on its own otherwise.
+            boolean vertical = variants.contains(Variant.VERTICAL_MIRROR)
+                    && !(rotations && horizontal);
+            int turnCount = rotations ? 4 : 1;
             for (Tile original : originals) {
                 Image image = original.getImage();
-                Image mirrored = TileImageOps.mirrorHorizontally(image);
+                Image mirrored = horizontal ? TileImageOps.mirrorHorizontally(image) : null;
+                Image flipped = vertical ? TileImageOps.mirrorVertically(image) : null;
                 if (original.isBottomTile()) {
                     // Ground tiles are only mirrored, never rotated or flipped.
-                    addOverlappingVariant(original, mirrored, building, index, palette, bySignature);
+                    if (mirrored != null) {
+                        addOverlappingVariant(original, mirrored, building, index, palette, bySignature);
+                    }
                     continue;
                 }
-                for (int turns = 0; turns < 4; turns++) {
+                for (int turns = 0; turns < turnCount; turns++) {
                     if (turns > 0) {
                         addOverlappingVariant(original, TileImageOps.rotateClockwise(image, turns),
                                 building, index, palette, bySignature);
                     }
-                    addOverlappingVariant(original, TileImageOps.rotateClockwise(mirrored, turns),
-                            building, index, palette, bySignature);
+                    if (mirrored != null) {
+                        addOverlappingVariant(original, TileImageOps.rotateClockwise(mirrored, turns),
+                                building, index, palette, bySignature);
+                    }
+                    if (flipped != null) {
+                        addOverlappingVariant(original, TileImageOps.rotateClockwise(flipped, turns),
+                                building, index, palette, bySignature);
+                    }
+                }
+            }
+            // Soft tiles drop the lines their neighbours own once every signature
+            // and variant has been read from the opaque pixels, so the painting
+            // order can never cover a shared line.
+            if (overlap == Overlap.SOFT) {
+                for (Tile tile : building) {
+                    TileImageOps.clearSharedLines((WritableImage) tile.getImage());
                 }
             }
         }
@@ -835,7 +1052,7 @@ enum TileSet {
         private void addOverlappingVariant(Tile original, Image image, List<Tile> building,
                                            Map<SideKey, List<Integer>> index, Palette palette,
                                            Map<String, Tile> bySignature) {
-            String sides = describeSides(palette, image.getPixelReader(), tileSize, true);
+            String sides = describeSides(palette, image.getPixelReader(), tileSize, overlap);
             // derive keeps the bottom flag, so ground variants stay protected.
             addOverlappingTile(original.derive(sides, image), building, index, bySignature);
         }
@@ -853,47 +1070,76 @@ enum TileSet {
 
         @Override
         public boolean derivesDuringLoad() {
-            return usesOverlap;
+            return usesOverlap();
         }
 
         @Override
         public String describeTransformed(Tile original, Transform transform, Image image, Palette palette) {
-            return describeSides(palette, image.getPixelReader(), tileSize, usesOverlap);
+            return describeSides(palette, image.getPixelReader(), tileSize, overlap);
         }
 
-        /** Reads the four effective sides directly from the pixels. */
-        private static String describeSides(Palette palette, PixelReader pattern, int tileSize, boolean overlap) {
+        /**
+         * Reads the four sides directly from the pixels.
+         *
+         * <p>Plain tiles touch edge to edge, so each side signs its single outer
+         * line. Hard overlap places neighbours one pattern pixel apart: they
+         * share two lines, and a zone is the pair of lines facing the neighbour,
+         * written in reading order so the facing pairs of two neighbours name
+         * the same pixels. Soft overlap places them two pixels apart: they share
+         * one line, and a zone is a single line again, but the side facing the
+         * previous tile signs the line next to the shared one (TOP and RIGHT
+         * sign the middle line, BOTTOM the last, LEFT the first), so the match
+         * carries the pattern one line further; the shared line itself is left
+         * transparent in the image so the neighbour that owns it always paints
+         * it.</p>
+         */
+        private static String describeSides(Palette palette, PixelReader pattern, int tileSize, Overlap overlap) {
             int inner = tileSize / 2;
             int last = tileSize - 1;
-            int top = overlap ? inner : 0;
-            int right = overlap ? inner : last;
             int[] positions = {0, inner, last};
             StringBuilder description = new StringBuilder(Tile.SIDES_LENGTH);
             for (int x : positions) {
-                description.append(palette.letterFor(pattern.getArgb(x, top)));
+                description.append(switch (overlap) {
+                    case NONE -> palette.letterFor(pattern.getArgb(x, 0));
+                    case SOFT -> palette.letterFor(pattern.getArgb(x, inner));
+                    case HARD -> palette.letterFor(pattern.getArgb(x, 0), pattern.getArgb(x, inner));
+                });
             }
             for (int y : positions) {
-                description.append(palette.letterFor(pattern.getArgb(right, y)));
+                description.append(switch (overlap) {
+                    case NONE -> palette.letterFor(pattern.getArgb(last, y));
+                    case SOFT -> palette.letterFor(pattern.getArgb(inner, y));
+                    case HARD -> palette.letterFor(pattern.getArgb(inner, y), pattern.getArgb(last, y));
+                });
             }
             for (int x : positions) {
-                description.append(palette.letterFor(pattern.getArgb(x, last)));
+                description.append(switch (overlap) {
+                    case NONE, SOFT -> palette.letterFor(pattern.getArgb(x, last));
+                    case HARD -> palette.letterFor(pattern.getArgb(x, inner), pattern.getArgb(x, last));
+                });
             }
             for (int y : positions) {
-                description.append(palette.letterFor(pattern.getArgb(0, y)));
+                description.append(switch (overlap) {
+                    case NONE, SOFT -> palette.letterFor(pattern.getArgb(0, y));
+                    case HARD -> palette.letterFor(pattern.getArgb(0, y), pattern.getArgb(inner, y));
+                });
             }
             return description.toString();
         }
     }
 
     /**
-     * Assigns a letter to every colour as it shows up, so the zones of a pattern
-     * can be written as text ({@code A}, {@code B}, {@code C}...). A palette only
-     * lives while its sample is being read, and every set gets its own, so the
-     * letters of a set are stable for its whole life.
+     * Assigns a letter to every colour, or pair of colours, as it shows up, so
+     * the zones of a pattern can be written as text ({@code A}, {@code B},
+     * {@code C}...). A palette only lives while its sample is being read, and
+     * every set gets its own, so the letters of a set are stable for its whole
+     * life. Only the hard overlap asks for pair letters; plain windows and the
+     * soft overlap ask for colour letters.
      */
     private static final class Palette {
 
         private final Map<Integer, String> lettersByColor = new HashMap<>();
+        private final Map<ColorPair, String> lettersByPair = new HashMap<>();
         private char nextLetter = 'A';
 
         /**
@@ -910,6 +1156,28 @@ enum TileSet {
             }
             return letter;
         }
+
+        /**
+         * Gets the letter of an ordered pair of colours, assigning the next free
+         * one if it is new.
+         *
+         * @param first  colour of the line closest to the neighbour
+         * @param second colour of the line the neighbour covers as well
+         * @return the single character description of that pair
+         */
+        private String letterFor(int first, int second) {
+            ColorPair pair = new ColorPair(first, second);
+            String letter = lettersByPair.get(pair);
+            if (letter == null) {
+                letter = String.valueOf(nextLetter++);
+                lettersByPair.put(pair, letter);
+            }
+            return letter;
+        }
+
+        /** The two colours of an overlapping zone, in reading order. */
+        private record ColorPair(int first, int second) {
+        }
     }
 
     /**
@@ -917,7 +1185,9 @@ enum TileSet {
      * is why it lives next to their declarations.
      *
      * @param name                   name of the tile, matches its file name
-     * @param sidesDescription       eight zones read clockwise from the top-left
+     * @param sidesDescription       twelve zones in the order TTTRRRBBBLLL; a
+     *                               corner is written on both sides that meet
+     *                               there
      * @param forbidsSameNeighbor    whether the tile rejects neighbours with its
      *                               own name
      * @param forcesHorizontalMirror whether the horizontal mirror is mandatory

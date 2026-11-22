@@ -374,6 +374,16 @@ final class TileBoard {
      *         neighbour (which means the board is empty or complete)
      */
     Point getLowestEntropyAnchor(Random random) {
+        return scanLowestEntropy(random);
+    }
+
+    /**
+     * One pass of the lowest-entropy search over the frontier.
+     *
+     * @param random source of randomness for the ties
+     * @return the chosen anchor, or {@code null} when no cell qualifies
+     */
+    private Point scanLowestEntropy(Random random) {
         Point best = null;
         int lowest = Integer.MAX_VALUE;
         int ties = 0;

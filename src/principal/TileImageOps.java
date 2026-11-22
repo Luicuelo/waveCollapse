@@ -113,25 +113,24 @@ final class TileImageOps {
         return region;
     }
 
-    /** Compares every pixel to preserve visually distinct patterns. */
-    static boolean samePixels(Image first, Image second) {
-        if (first == second) {
-            return true;
+    /**
+     * Clears the first row and the last column of a soft overlap tile, in place,
+     * leaving them transparent. Those are the lines the upper and right
+     * neighbours own, so the tile never paints over them and the shared line
+     * always shows the neighbour's pixels, whatever the painting order.
+     *
+     * @param image tile image to clear; only its first row and last column change
+     */
+    static void clearSharedLines(WritableImage image) {
+        int width = (int) image.getWidth();
+        int height = (int) image.getHeight();
+        PixelWriter writer = image.getPixelWriter();
+        for (int x = 0; x < width; x++) {
+            writer.setArgb(x, 0, 0);
         }
-        if (first == null || second == null
-                || first.getWidth() != second.getWidth() || first.getHeight() != second.getHeight()) {
-            return false;
+        for (int y = 0; y < height; y++) {
+            writer.setArgb(width - 1, y, 0);
         }
-        PixelReader firstReader = first.getPixelReader();
-        PixelReader secondReader = second.getPixelReader();
-        for (int y = 0; y < (int) first.getHeight(); y++) {
-            for (int x = 0; x < (int) first.getWidth(); x++) {
-                if (firstReader.getArgb(x, y) != secondReader.getArgb(x, y)) {
-                    return false;
-                }
-            }
-        }
-        return true;
     }
 
     private static Image rotateQuarterTurn(Image source) {

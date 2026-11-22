@@ -133,13 +133,13 @@ undocumented private fields.
 |---|---|---|
 | `--width=<px>` | `800` | canvas width |
 | `--height=<px>` | `800` | canvas height |
-| `--set=<name>` | `circuit` | tile set to start with, by folder name |
+| `--set=<name>` | `circuit` | tile set to start with, by folder, constant or display name |
 | `--seed=<long>` | random | seed of the generation |
 
-The board size depends on the canvas and on the distance between pattern
-anchors. In overlapping sets each 3x3 pattern advances two pixels per cell;
-in the others a cell occupies the full tile size. Higher zoom reduces the
-number of cells.
+The board size depends on the canvas and on the side of a pattern. In
+overlapping sets the anchors sit one anchor step apart: one pattern pixel in
+hard overlap, two in soft overlap; elsewhere a cell holds the whole tile.
+Higher zoom reduces the number of cells.
 
 Without `--seed`, every *Restart* picks a new random seed and prints it to the
 console, so any pattern you like can be reproduced later with
@@ -161,7 +161,8 @@ console, so any pattern you like can be reproduced later with
 |---|---|---|
 | `circuit`, `castle`, `knots`, `simple`, `floorPlan`, `rooms`, `circles` | hand written | each tile is declared inside `TileSet` with an 8 character border description |
 | `NotKnot`, `Link`, `Knot`, `Maze`, `ColoredCity`, `City`, `Water` | sampled | every 3x3 window of the sample becomes a tile |
-| `Flowers`, `Skyline`, `SimpleWall`, `Paths` | sampled, overlapping | 3x3 windows whose anchors are two pixels apart; `Flowers` and `Skyline` begin with a tile from the bottom row of the sample |
+| `Flowers hardOverlap`, `Skyline hardOverlap`, `SimpleWall hardOverlap`, `Paths hardOverlap` | sampled, hard overlap | 3x3 windows whose anchors are one pixel apart, so neighbours share two lines and each side signs pairs of lines; `Flowers` and `Skyline` begin with a tile from the bottom row |
+| `Flowers softOverlap`, `Skyline softOverlap`, `SimpleWall softOverlap`, `Paths softOverlap`, `ScaledMaze softOverlap` | sampled, soft overlap | the same samples with anchors two pixels apart, so neighbours share one line and each side signs a single line offset inwards on the side facing the previous tile; the tile drops its first row and last column so the painting order never matters; `Flowers` and `Skyline` begin with a tile from the bottom row |
 
 A set knows both where its graphics live and which tiles it is made of, so the
 list above is the whole content of `TileSet`. The tiles are read the first time
@@ -182,18 +183,24 @@ original windows with the same signature, and keep one tile per signature. For
 from-bottom sets, windows from the sample's bottom row produce only their
 left-right mirror, which also counts as a bottom tile.
 
+A sampled set chooses which symmetries of each window it generates when it is
+created: `ROTATIONS`, `HORIZONTAL_MIRROR`, `VERTICAL_MIRROR`, or any combination
+of them. The default keeps all of them, so every existing set is unchanged; a
+set that must not be mirrored, for instance, can ask for rotations only.
+
 ## How a tile is described
 
-Every tile has four sides of three zones each, described internally as
-`TTTRRRBBBLLL`. Horizontal sides are read from left to right and vertical
-sides from top to bottom. Two tiles are compatible when their facing sides
-are equal.
+Every tile has four sides of three zones each, described as `TTTRRRBBBLLL`.
+Horizontal sides are read from left to right and vertical sides from top to
+bottom. Two tiles are compatible when their facing sides are equal.
 
-Hand written definitions keep the original eight zones; the sides are widened
-to the four full ones when the set is loaded. Sampled sets assign a letter to
-every color. Overlapping samples generate the variants of each window and keep
-a single tile per signature; the other sets keep the previous behaviour. For an
-overlapping pattern like this one:
+The description is the same everywhere: hand written definitions declare it in
+full, so a corner is written twice, once on each of the two sides that meet
+there. Sampled sets assign a letter to every color, or to every pair of colors
+in hard overlap, and keep one tile per signature; overlapping samples
+generate the variants of each window during loading.
+
+A plain window exposes its outer lines, so for a pattern like this one:
 
 ```
 A B C
@@ -201,15 +208,25 @@ D E F
 G H I
 ```
 
-The effective sides are `top = DEF`, `right = BEH`, `bottom = GHI` and
-`left = ADG`. When an image is rotated or mirrored, its sides are read again
-from the transformed image. When drawing, the tiles above and to the right
-win over the overlaps, independently of the placement order.
+the sides are `top = ABC`, `right = CFI`, `bottom = GHI` and `left = ADG`. A
+hard overlap window shares two lines with each neighbour, so a zone of its
+sides is the pair of lines that faces the neighbour, always written in reading
+order: `top = AD BE CF`, `right = BC EF HI`, `bottom = DG EH FI` and
+`left = AB DE GH`. A soft overlap window shares a single line, its anchors
+sitting two pixels apart, and signs single lines again, offset inwards on the
+side that faces the previous tile: `top = DEF`, `right = BEH`, `bottom = GHI`
+and `left = ADG`, so the match carries the pattern one line further. Its image
+drops the first row and the last column (the lines the upper and right
+neighbours own), so every tile paints only its own lines and the painting order
+never matters. When an image is rotated or mirrored, its sides are read again
+from the transformed image. On the canvas overlapping tiles are spaced by the
+anchor step of their mode; hard overlap overwrites the identical shared lines,
+while soft overlap paints only the lines each tile owns.
 
 ## How the generation works
 
-1. Seed the board. Sets that start from the bottom fill the whole bottom row
-   with random soil tiles; any other set places a single random tile in the
+1. Seed the board. Sets that start from the bottom place a single soil tile in
+   the bottom-left corner; any other set places a single random tile in the
    centre. Soil tiles end up confined to the bottom row by the solver itself,
    not by a positional guard: the top border of a soil tile matches ordinary
    tiles, but no tile has a soil border on its top side, so a soil tile placed

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
@@ -77,9 +78,17 @@ final class WfcSolver {
     /** Maximum number of remembered decisions; older ones are discarded. */
     private static final int MAX_BACKTRACK_STATES = 300;
     /** Times the same empty cell may fail before its whole area is cleared. */
-    private static final int STUCK_LIMIT = 50;
+    private static final int STUCK_LIMIT = 500;
+    /**
+     * Times the same empty cell must fail before a random occupied neighbour
+     * is cleared to repair it. Below this, only backtracking repairs the
+     * deadlock, so a fresh contradiction never destroys surrounding work;
+     * {@link #STUCK_LIMIT} still triggers the area reset. With 1 the clearing
+     * starts on the first failure, the original always-clear behaviour.
+     */
+    private static final int RANDOM_CLEAR_LIMIT = 20;
     /** Radius of the area cleared when a cell gets permanently stuck. */
-    private static final int CLEAR_RADIUS = 4;
+    private static final int CLEAR_RADIUS = 2;
     /** Delay between steps, so the generation can be watched. */
     private static final int STEP_DELAY_MS = 2;
 
@@ -207,11 +216,14 @@ final class WfcSolver {
                 // Everything is inside the try block: if anything fails, the
                 // executor simply moves on to the next generation instead of
                 // leaving the solver in a half dead state.
+                long startNanos = System.nanoTime();
                 placeInitialTile(board, random);
                 boolean collapsed = collapse(board, random, runId);
                 if (!isStale(runId)) {
                     System.out.println(collapsed
-                            ? "Generation finished: board collapsed."
+                            ? String.format(Locale.ROOT,
+                                    "Generation finished: board collapsed in %.2f s.",
+                                    (System.nanoTime() - startNanos) / 1e9)
                             : "Generation finished: no solution found.");
                 }
             } catch (RuntimeException e) {
@@ -224,23 +236,21 @@ final class WfcSolver {
     }
 
     /**
-     * Seeds the board. If the set starts from bottom, the entire bottom row
-     * is filled with bottom tiles, growing from the bottom-left corner. For any
-     * other set the floor rules do not apply, so a single random tile is placed
-     * in the centre.
+     * Seeds the board. If the set starts from bottom, a single ground tile is
+     * placed in the bottom-left corner; any other set places a single random
+     * tile in the centre.
      */
     private void placeInitialTile(TileBoard board, Random random) {
         TileSet set = board.getSet();
         boolean startsFromBottom = set.startsFromBottom();
 
         if (startsFromBottom) {
-            // Seed the entire bottom row for 'fromBottom' sets
+            // Seed only the bottom-left corner: a whole row picked at random
+            // would mix ground tiles whose side borders do not match.
             int bottomRow = board.getHeight() - 1;
-            for (int x = 0; x < board.getWidth(); x++) {
-                int tileIndex = set.randomBottomTileIndex(random);
-                board.place(x, bottomRow, tileIndex);
-                listener.tilePlaced(x, bottomRow, tileIndex, set);
-            }
+            int tileIndex = set.randomBottomTileIndex(random);
+            board.place(0, bottomRow, tileIndex);
+            listener.tilePlaced(0, bottomRow, tileIndex, set);
         } else {
             // Standard seeding: one tile in the middle
             int tileIndex = set.randomTileIndex(random);
@@ -315,7 +325,9 @@ final class WfcSolver {
                 clearArea(board, cell);
             } else {
                 stuckCounts.put(cell, times);
-                clearRandomNeighbor(board, cell, random);
+                if (times >= RANDOM_CLEAR_LIMIT) {
+                    clearRandomNeighbor(board, cell, random);
+                }
             }
         }
     }

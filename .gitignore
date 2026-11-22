@@ -2,6 +2,10 @@
 bin/circuit/bridge.png
 /out
 /out_verify
+/out_after
+/out_before
+/out_harness
+/tmp_sim
 *.7z
 waveCollapse.iml
 /bin
