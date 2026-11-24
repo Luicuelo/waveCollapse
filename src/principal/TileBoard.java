@@ -5,6 +5,7 @@ import principal.Tile.Side;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.TreeSet;
@@ -53,6 +54,10 @@ final class TileBoard {
      * @param y row
      */
     record Point(int x, int y) {
+        long distanceToOrigin() {
+            return (long) x + y;
+        }
+
         @Override
         public String toString() {
             return "(" + x + ", " + y + ")";
@@ -76,16 +81,23 @@ final class TileBoard {
      * Live frontier: the placed cells that still have at least one empty
      * neighbour, i.e. exactly the cells the anchor can be chosen from.
      * {@link #writeCell(int, int, int)} keeps it in sync, so the solver never
-     * has to sweep the whole board. The order is part of the reproducibility
-     * contract: column-major, the same order the full scan used to visit, so
-     * the RNG draws and therefore the board stay identical.
+     * has to sweep the whole board. Ordered by Manhattan distance to the
+     * origin, then coordinates, which is what lets the scan below start near
+     * the last placement instead of always at the same corner.
      */
     private final TreeSet<Point> frontier;
 
-    /** Column-major order that mirrors the old {@code for x / for y} scan. */
-    private static final Comparator<Point> COLUMN_MAJOR =
-            Comparator.comparingInt(Point::x).thenComparingInt(Point::y);
+    /** Coordinates break the ties between cells at the same origin distance. */
+    private static final Comparator<Point> ORIGIN_DISTANCE =
+            Comparator.comparingLong(Point::distanceToOrigin)
+                    .thenComparingInt(Point::x).thenComparingInt(Point::y);
 
+    /**
+     * Last placed cell, also when the placement comes from the backtracking.
+     * The scan of the anchor starts from its origin distance, so it is the
+     * focus the locality bias is built on.
+     */
+    private Point lastPlaced;
     private int placedCount;
 
     /**
@@ -124,7 +136,7 @@ final class TileBoard {
             Arrays.fill(column, EMPTY);
         }
         this.cachedDomains = new int[width][height][];
-        this.frontier = new TreeSet<>(COLUMN_MAJOR);
+        this.frontier = new TreeSet<>(ORIGIN_DISTANCE);
     }
 
     /**
@@ -222,6 +234,7 @@ final class TileBoard {
                     "Cell " + x + "," + y + " already holds tile " + cells[x][y]);
         }
         writeCell(x, y, tileIndex);
+        lastPlaced = new Point(x, y);
         placedCount++;
     }
 
@@ -363,7 +376,9 @@ final class TileBoard {
 
     /**
      * Finds the placed tile that has the fewest ways to grow, which is the one
-     * the solver collapses next.
+     * the solver collapses next. The frontier is visited outwards from the
+     * origin distance of the last placement, so the cells that are scanned
+     * first are the ones whose distance to the origin is closest to it.
      *
      * <p>Ties are broken at random: without that, the scan order would always
      * favour the same corner and the pattern would grow noticeably towards
@@ -378,20 +393,40 @@ final class TileBoard {
     }
 
     /**
-     * One pass of the lowest-entropy search over the frontier.
+     * One pass of the lowest-entropy search over the frontier, merged from the
+     * two ends of the set around the last placement.
+     *
+     * <p>A similar distance to the origin is only an approximation of being
+     * near: {@code (10, 0)} and {@code (0, 10)} share an origin distance but
+     * are far apart. The point is to keep the work local, not to measure it.</p>
      *
      * @param random source of randomness for the ties
      * @return the chosen anchor, or {@code null} when no cell qualifies
      */
     private Point scanLowestEntropy(Random random) {
+        if (frontier.isEmpty()) {
+            return null;
+        }
+        Iterator<Point> before = frontier.headSet(lastPlaced, false).descendingIterator();
+        Iterator<Point> after = frontier.tailSet(lastPlaced, true).iterator();
+        Point previous = before.hasNext() ? before.next() : null;
+        Point next = after.hasNext() ? after.next() : null;
+        long originDistance = lastPlaced.distanceToOrigin();
         Point best = null;
         int lowest = Integer.MAX_VALUE;
         int ties = 0;
 
-        // The frontier already holds exactly the placed cells with an empty
-        // neighbour, in column-major order, so this replaces the whole-board
-        // sweep with a pass over the few cells that can actually be the anchor.
-        for (Point cell : frontier) {
+        while (previous != null || next != null) {
+            Point cell;
+            if (previous == null || (next != null
+                    && next.distanceToOrigin() - originDistance
+                            <= originDistance - previous.distanceToOrigin())) {
+                cell = next;
+                next = after.hasNext() ? after.next() : null;
+            } else {
+                cell = previous;
+                previous = before.hasNext() ? before.next() : null;
+            }
             int count = countPossiblePlacements(cell.x(), cell.y());
             if (count < lowest) {
                 lowest = count;
